@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import path from 'path'
 import { defineConfig } from 'vite'
+import { safexTransform } from 'vite-plugin-safex-transform'
 
 function runSdl3jsPlugin() {
   let child: ReturnType<typeof spawn> | null = null
@@ -37,7 +38,7 @@ function runSdl3jsPlugin() {
       }
 
       console.log('[run-sdl3js] Starting ./build/sdl3js...')
-      child = spawn('./build/sdl3js', [], { stdio: 'inherit' })
+      child = spawn(path.resolve(__dirname, './build/sdl3js'), [], { stdio: 'inherit' })
 
       child.on('error', (err) => {
         console.error('[run-sdl3js] Failed to start sdl3js:', err)
@@ -55,12 +56,12 @@ export default defineConfig({
       formats: ['es'],
       fileName: () => 'main.js',
     },
-    outDir: 'dist',
+    outDir: path.resolve(__dirname, 'dist'),
     target: 'esnext',
     minify: false,
     rollupOptions: {
       external: ['sdl3', 'box2d'],
     },
   },
-  plugins: [runSdl3jsPlugin()],
+  plugins: [runSdl3jsPlugin(), safexTransform()],
 })
