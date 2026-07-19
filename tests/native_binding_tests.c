@@ -155,6 +155,119 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
     JS_FreeValue(ctx, invalids);
 }
 
+static void test_development_resource_path(JSContext *ctx)
+{
+    JSValue module = eval_js(
+        ctx,
+        "import { loadTextFile } from 'sdl3';"
+        "globalThis.resourceFound = loadTextFile('Json/items.json') !== null;",
+        JS_EVAL_TYPE_MODULE);
+    JS_FreeValue(ctx, module);
+
+    JSValue value = eval_js(
+        ctx,
+        "globalThis.resourceFound",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true(
+        "native build resolves resources from the repository root",
+        JS_ToBool(ctx, value));
+    JS_FreeValue(ctx, value);
+}
+
+static void test_mp3_audio_loading(JSContext *ctx)
+{
+    JSValue module = eval_js(
+        ctx,
+        "import { loadAudio, releaseAudio } from 'sdl3';"
+        "globalThis.mp3AudioId = loadAudio('Audio/Button.mp3');"
+        "if (globalThis.mp3AudioId >= 0) releaseAudio(globalThis.mp3AudioId);",
+        JS_EVAL_TYPE_MODULE);
+    JS_FreeValue(ctx, module);
+    if (failures > 0) return;
+
+    JSValue value = eval_js(ctx, "globalThis.mp3AudioId", JS_EVAL_TYPE_GLOBAL);
+    int id = -1;
+    JS_ToInt32(ctx, &id, value);
+    expect_true("native binding loads MP3 audio", id >= 0);
+    JS_FreeValue(ctx, value);
+}
+
+static void test_local_storage(JSContext *ctx)
+{
+    JSValue value = eval_js(
+        ctx,
+        "localStorage.setItem('key', 'value');"
+        "localStorage.getItem('key') === 'value'",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true("localStorage stores string values", JS_ToBool(ctx, value));
+    JS_FreeValue(ctx, value);
+}
+
+static void test_async_await(JSContext *ctx)
+{
+    const char *module_source =
+        "globalThis.topLevelAwaitValue = await Promise.resolve('ready');";
+    JSValue module = JS_Eval(
+        ctx,
+        module_source,
+        strlen(module_source),
+        "native-async-await-test.mjs",
+        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    expect_true("top-level await module compiles", !JS_IsException(module));
+    if (JS_IsException(module)) {
+        print_exception(ctx);
+        JS_FreeValue(ctx, module);
+        return;
+    }
+
+    expect_int("top-level await module resolves", JS_ResolveModule(ctx, module), 0);
+    JSValue result = JS_EvalFunction(ctx, module);
+    expect_true("top-level await returns a promise", JS_IsObject(result));
+    js_execute_pending_job(JS_GetRuntime(ctx));
+    expect_int(
+        "top-level await promise is fulfilled",
+        JS_PromiseState(ctx, result),
+        JS_PROMISE_FULFILLED);
+    JS_FreeValue(ctx, result);
+
+    JSValue value = eval_js(
+        ctx,
+        "globalThis.topLevelAwaitValue",
+        JS_EVAL_TYPE_GLOBAL);
+    const char *value_string = JS_ToCString(ctx, value);
+    expect_string("top-level await resumes", value_string, "ready");
+    JS_FreeCString(ctx, value_string);
+    JS_FreeValue(ctx, value);
+
+    JSValue callback_module = eval_js(
+        ctx,
+        "import { onInit } from 'sdl3';"
+        "globalThis.asyncCallbackValue = 'pending';"
+        "async function getProfile() { return {}; }"
+        "async function loadAssets() { await Promise.resolve(); }"
+        "onInit(async () => {"
+        "  await getProfile();"
+        "  await loadAssets();"
+        "  globalThis.asyncCallbackValue = 'ready';"
+        "});",
+        JS_EVAL_TYPE_MODULE);
+    JS_FreeValue(ctx, callback_module);
+    if (failures > 0) return;
+
+    js_call_onInit(ctx);
+    JSValue callback_value = eval_js(
+        ctx,
+        "globalThis.asyncCallbackValue",
+        JS_EVAL_TYPE_GLOBAL);
+    const char *callback_value_string = JS_ToCString(ctx, callback_value);
+    expect_string(
+        "async lifecycle callback drains chained awaits before returning to native",
+        callback_value_string,
+        "ready");
+    JS_FreeCString(ctx, callback_value_string);
+    JS_FreeValue(ctx, callback_value);
+}
+
 static void test_window_size_defaults(void)
 {
     int width = 0;
@@ -284,6 +397,10 @@ int main(void)
 
     js_init_sdl3(ctx);
     test_callbacks_and_invalid_resource_paths(ctx);
+    test_development_resource_path(ctx);
+    test_mp3_audio_loading(ctx);
+    test_local_storage(ctx);
+    test_async_await(ctx);
     test_box2d_module_registration(ctx);
     test_window_size_defaults();
     test_coordinate_conversion_without_renderer();

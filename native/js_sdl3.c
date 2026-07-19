@@ -3,6 +3,8 @@
 #include "js_box2d.h"
 #endif
 #include <SDL3_image/SDL_image.h>
+#define DR_MP3_IMPLEMENTATION
+#include "dr_mp3.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <stdio.h>
@@ -71,6 +73,14 @@ typedef struct AudioVoice {
 
 static AudioVoice g_audio_voices[MAX_AUDIO_VOICES];
 
+#define MAX_STORAGE_ENTRIES 128
+typedef struct StorageEntry {
+    char *key;
+    char *value;
+} StorageEntry;
+
+static StorageEntry g_storage[MAX_STORAGE_ENTRIES];
+
 #define MAX_CLIP_DEPTH 32
 static SDL_Rect g_clip_stack[MAX_CLIP_DEPTH];
 static int g_clip_depth = 0;
@@ -106,6 +116,24 @@ static char *copy_string(const char *value)
     return copy;
 }
 
+static StorageEntry *find_storage_entry(const char *key)
+{
+    for (int i = 0; i < MAX_STORAGE_ENTRIES; i++) {
+        if (g_storage[i].key && strcmp(g_storage[i].key, key) == 0) {
+            return &g_storage[i];
+        }
+    }
+    return NULL;
+}
+
+static StorageEntry *find_free_storage_entry(void)
+{
+    for (int i = 0; i < MAX_STORAGE_ENTRIES; i++) {
+        if (!g_storage[i].key) return &g_storage[i];
+    }
+    return NULL;
+}
+
 static bool has_resource_prefix(const char *path)
 {
     return strncmp(path, "res/", 4) == 0 || strncmp(path, "res\\", 4) == 0;
@@ -123,6 +151,14 @@ static char *resource_prefixed_path(const char *path)
     if (!resolved) return NULL;
     snprintf(resolved, length, "res/%s", path);
     return resolved;
+}
+
+static bool path_exists(const char *path)
+{
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    fclose(file);
+    return true;
 }
 
 static char *resolve_resource_path(const char *path)
@@ -143,6 +179,27 @@ static char *resolve_resource_path(const char *path)
     char *resolved = malloc(length);
     if (!resolved) return NULL;
     snprintf(resolved, length, "%s%s%s", base_path, resource_prefix, path);
+
+    if (path_exists(resolved)) return resolved;
+
+    /* `native:dev` launches from native/build while resources stay at ../res. */
+    size_t development_length =
+        strlen(base_path) + strlen("../../") + strlen(resource_prefix) +
+        strlen(path) + 1;
+    char *development_path = malloc(development_length);
+    if (!development_path) return resolved;
+    snprintf(
+        development_path,
+        development_length,
+        "%s../../%s%s",
+        base_path,
+        resource_prefix,
+        path);
+    if (path_exists(development_path)) {
+        free(resolved);
+        return development_path;
+    }
+    free(development_path);
     return resolved;
 }
 
@@ -259,12 +316,18 @@ static void js_print_exception(JSContext *ctx)
     JS_FreeValue(ctx, exc);
 }
 
+static void js_complete_callback(JSContext *ctx, JSValue result)
+{
+    if (JS_IsException(result)) js_print_exception(ctx);
+    JS_FreeValue(ctx, result);
+    js_execute_pending_job(JS_GetRuntime(ctx));
+}
+
 static void js_call_void(JSContext *ctx, JSValue func)
 {
     if (JS_IsUndefined(func)) return;
     JSValue ret = JS_Call(ctx, func, JS_UNDEFINED, 0, NULL);
-    if (JS_IsException(ret)) js_print_exception(ctx);
-    JS_FreeValue(ctx, ret);
+    js_complete_callback(ctx, ret);
 }
 
 static void js_call_touch(JSContext *ctx, JSValue func, float x, float y)
@@ -274,10 +337,9 @@ static void js_call_touch(JSContext *ctx, JSValue func, float x, float y)
     argv[0] = JS_NewFloat64(ctx, (double)x);
     argv[1] = JS_NewFloat64(ctx, (double)y);
     JSValue ret = JS_Call(ctx, func, JS_UNDEFINED, 2, argv);
-    if (JS_IsException(ret)) js_print_exception(ctx);
     JS_FreeValue(ctx, argv[0]);
     JS_FreeValue(ctx, argv[1]);
-    JS_FreeValue(ctx, ret);
+    js_complete_callback(ctx, ret);
 }
 
 static void js_call_string(JSContext *ctx, JSValue func, const char *value)
@@ -285,9 +347,8 @@ static void js_call_string(JSContext *ctx, JSValue func, const char *value)
     if (JS_IsUndefined(func) || !value) return;
     JSValue arg = JS_NewString(ctx, value);
     JSValue ret = JS_Call(ctx, func, JS_UNDEFINED, 1, &arg);
-    if (JS_IsException(ret)) js_print_exception(ctx);
     JS_FreeValue(ctx, arg);
-    JS_FreeValue(ctx, ret);
+    js_complete_callback(ctx, ret);
 }
 
 static void js_call_bool(JSContext *ctx, JSValue func, int value)
@@ -295,9 +356,8 @@ static void js_call_bool(JSContext *ctx, JSValue func, int value)
     if (JS_IsUndefined(func)) return;
     JSValue arg = JS_NewBool(ctx, value);
     JSValue ret = JS_Call(ctx, func, JS_UNDEFINED, 1, &arg);
-    if (JS_IsException(ret)) js_print_exception(ctx);
     JS_FreeValue(ctx, arg);
-    JS_FreeValue(ctx, ret);
+    js_complete_callback(ctx, ret);
 }
 
 static void js_call_orientation(
@@ -311,9 +371,8 @@ static void js_call_orientation(
         JS_NewInt32(ctx, height),
     };
     JSValue ret = JS_Call(ctx, func, JS_UNDEFINED, 3, argv);
-    if (JS_IsException(ret)) js_print_exception(ctx);
     for (int i = 0; i < 3; i++) JS_FreeValue(ctx, argv[i]);
-    JS_FreeValue(ctx, ret);
+    js_complete_callback(ctx, ret);
 }
 
 /* --- Binding: createWindow(title, w, h) --- */
@@ -376,8 +435,61 @@ static JSValue js_createWindow(
         ctx,
         argc > 3 ? argv[3] : JS_UNDEFINED);
 
-    g_window = SDL_CreateWindow(title, g_win_w, g_win_h, 0);
+    int window_w = g_win_w;
+    int window_h = g_win_h;
+    SDL_Rect display_bounds;
+    if (SDL_GetDisplayUsableBounds(
+            SDL_GetPrimaryDisplay(),
+            &display_bounds)) {
+        float scale_x = (float)display_bounds.w * 0.9f / (float)g_win_w;
+        float scale_y = (float)display_bounds.h * 0.9f / (float)g_win_h;
+        float scale = SDL_min(1.0f, SDL_min(scale_x, scale_y));
+        window_w = (int)((float)g_win_w * scale);
+        window_h = (int)((float)g_win_h * scale);
+        SDL_Log(
+            "Creating window: logical=%dx%d physical=%dx%d display=%dx%d",
+            g_win_w,
+            g_win_h,
+            window_w,
+            window_h,
+            display_bounds.w,
+            display_bounds.h);
+    } else {
+        SDL_Log(
+            "Creating window: logical=%dx%d physical=%dx%d (display bounds unavailable: %s)",
+            g_win_w,
+            g_win_h,
+            window_w,
+            window_h,
+            SDL_GetError());
+    }
+
+    g_window = SDL_CreateWindow(title, window_w, window_h, 0);
+    if (!g_window) {
+        JS_FreeCString(ctx, title);
+        return JS_ThrowInternalError(ctx, "SDL_CreateWindow failed: %s", SDL_GetError());
+    }
     g_renderer = SDL_CreateRenderer(g_window, NULL);
+    if (!g_renderer) {
+        JS_FreeCString(ctx, title);
+        SDL_DestroyWindow(g_window);
+        g_window = NULL;
+        return JS_ThrowInternalError(ctx, "SDL_CreateRenderer failed: %s", SDL_GetError());
+    }
+    SDL_SetWindowPosition(
+        g_window,
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED);
+    if (!SDL_ShowWindow(g_window)) {
+        JS_FreeCString(ctx, title);
+        SDL_DestroyRenderer(g_renderer);
+        SDL_DestroyWindow(g_window);
+        g_renderer = NULL;
+        g_window = NULL;
+        return JS_ThrowInternalError(ctx, "SDL_ShowWindow failed: %s", SDL_GetError());
+    }
+    SDL_RaiseWindow(g_window);
+    SDL_Log("SDL window is visible and raised");
     SDL_SetRenderLogicalPresentation(
         g_renderer,
         g_win_w,
@@ -1023,6 +1135,36 @@ static JSValue js_loadAudio(
     if (!loaded && prefixed_path) {
         loaded = SDL_LoadWAV(prefixed_path, &spec, &data, &length);
     }
+
+    if (!loaded) {
+        const char *audio_paths[] = { resolved_path, path, prefixed_path };
+        for (size_t i = 0; i < SDL_arraysize(audio_paths) && !loaded; i++) {
+            if (!audio_paths[i]) continue;
+
+            drmp3_config config;
+            drmp3_uint64 frame_count;
+            drmp3_int16 *pcm = drmp3_open_file_and_read_pcm_frames_s16(
+                audio_paths[i], &config, &frame_count, NULL);
+            if (!pcm || !config.channels || !config.sampleRate ||
+                frame_count > UINT32_MAX / config.channels / sizeof(*pcm)) {
+                drmp3_free(pcm, NULL);
+                continue;
+            }
+
+            length = (Uint32)(frame_count * config.channels * sizeof(*pcm));
+            data = SDL_malloc(length);
+            if (!data) {
+                drmp3_free(pcm, NULL);
+                break;
+            }
+            memcpy(data, pcm, length);
+            drmp3_free(pcm, NULL);
+            spec.format = SDL_AUDIO_S16LE;
+            spec.channels = config.channels;
+            spec.freq = config.sampleRate;
+            loaded = true;
+        }
+    }
     free(prefixed_path);
     free(resolved_path);
     if (!loaded) {
@@ -1644,6 +1786,7 @@ static JSValue js_onInit(
     if (!JS_IsFunction(ctx, argv[0])) return JS_EXCEPTION;
     JS_FreeValue(ctx, g_onInit);
     g_onInit = JS_DupValue(ctx, argv[0]);
+    SDL_Log("JavaScript onInit callback registered");
     return JS_UNDEFINED;
 }
 
@@ -1890,14 +2033,20 @@ static JSValue js_consoleLog(
     int argc,
     JSValueConst *argv)
 {
+    (void)this_val;
+    char *message = SDL_strdup("");
+    if (!message) return JS_UNDEFINED;
     for (int i = 0; i < argc; i++) {
         const char *str = JS_ToCString(ctx, argv[i]);
-        if (i > 0) printf(" ");
-        printf("%s", str ? str : "undefined");
+        char *next = NULL;
+        SDL_asprintf(&next, "%s%s%s", message, i > 0 ? " " : "", str ? str : "undefined");
+        SDL_free(message);
+        message = next;
         JS_FreeCString(ctx, str);
+        if (!message) return JS_UNDEFINED;
     }
-    printf("\n");
-    fflush(stdout);
+    SDL_Log("%s", message);
+    SDL_free(message);
     return JS_UNDEFINED;
 }
 
@@ -1920,6 +2069,115 @@ static JSValue js_consoleAssert(
     printf("\n");
     fflush(stdout);
     return JS_UNDEFINED;
+}
+
+static JSValue js_storage_getItem(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    (void)this_val;
+    if (argc < 1) return JS_NULL;
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) return JS_EXCEPTION;
+    StorageEntry *entry = find_storage_entry(key);
+    JSValue result = entry ? JS_NewString(ctx, entry->value) : JS_NULL;
+    JS_FreeCString(ctx, key);
+    return result;
+}
+
+static JSValue js_storage_setItem(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    (void)this_val;
+    if (argc < 2) return JS_UNDEFINED;
+    const char *key = JS_ToCString(ctx, argv[0]);
+    const char *value = JS_ToCString(ctx, argv[1]);
+    if (!key || !value) {
+        JS_FreeCString(ctx, key);
+        JS_FreeCString(ctx, value);
+        return JS_EXCEPTION;
+    }
+    StorageEntry *entry = find_storage_entry(key);
+    if (!entry) entry = find_free_storage_entry();
+    if (!entry) {
+        JS_FreeCString(ctx, key);
+        JS_FreeCString(ctx, value);
+        return JS_ThrowInternalError(ctx, "localStorage is full");
+    }
+    char *stored_key = entry->key ? NULL : copy_string(key);
+    char *stored_value = copy_string(value);
+    if ((!entry->key && !stored_key) || !stored_value) {
+        free(stored_key);
+        free(stored_value);
+        JS_FreeCString(ctx, key);
+        JS_FreeCString(ctx, value);
+        return JS_EXCEPTION;
+    }
+    free(entry->value);
+    entry->key = entry->key ? entry->key : stored_key;
+    entry->value = stored_value;
+    JS_FreeCString(ctx, key);
+    JS_FreeCString(ctx, value);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_storage_removeItem(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    const char *key = JS_ToCString(ctx, argv[0]);
+    if (!key) return JS_EXCEPTION;
+    StorageEntry *entry = find_storage_entry(key);
+    if (entry) {
+        free(entry->key);
+        free(entry->value);
+        memset(entry, 0, sizeof(*entry));
+    }
+    JS_FreeCString(ctx, key);
+    return JS_UNDEFINED;
+}
+
+static JSValue js_storage_clear(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    (void)ctx;
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    for (int i = 0; i < MAX_STORAGE_ENTRIES; i++) {
+        free(g_storage[i].key);
+        free(g_storage[i].value);
+        memset(&g_storage[i], 0, sizeof(g_storage[i]));
+    }
+    return JS_UNDEFINED;
+}
+
+static void js_init_local_storage(JSContext *ctx)
+{
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue storage = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, storage, "getItem",
+        JS_NewCFunction(ctx, js_storage_getItem, "getItem", 1));
+    JS_SetPropertyStr(ctx, storage, "setItem",
+        JS_NewCFunction(ctx, js_storage_setItem, "setItem", 2));
+    JS_SetPropertyStr(ctx, storage, "removeItem",
+        JS_NewCFunction(ctx, js_storage_removeItem, "removeItem", 1));
+    JS_SetPropertyStr(ctx, storage, "clear",
+        JS_NewCFunction(ctx, js_storage_clear, "clear", 0));
+    JS_SetPropertyStr(ctx, global, "localStorage", storage);
+    JS_FreeValue(ctx, global);
 }
 
 int js_init_console(JSContext *ctx)
@@ -1948,6 +2206,7 @@ int js_init_sdl3(JSContext *ctx)
     js_init_box2d(ctx);
 #endif
     js_init_console(ctx);
+    js_init_local_storage(ctx);
     return 0;
 }
 
@@ -1981,6 +2240,8 @@ void js_sdl3_shutdown(JSContext *ctx)
     g_onBackground = g_onForeground = JS_UNDEFINED;
     g_onInterruption = g_onLowMemory = JS_UNDEFINED;
     g_onOrientationChange = g_onTerminate = JS_UNDEFINED;
+
+    js_storage_clear(ctx, JS_UNDEFINED, 0, NULL);
 
     for (int i = 0; i < MAX_TEXTURES; i++) {
         if (g_textures[i].texture) {
@@ -2026,9 +2287,18 @@ void js_sdl3_shutdown(JSContext *ctx)
 
 void js_execute_pending_job(JSRuntime *rt)
 {
-    JSContext *job_ctx = NULL;
-    int status = JS_ExecutePendingJob(rt, &job_ctx);
-    if (status < 0 && job_ctx) js_print_exception(job_ctx);
+    int jobs = 0;
+    for (;;) {
+        JSContext *job_ctx = NULL;
+        int status = JS_ExecutePendingJob(rt, &job_ctx);
+        if (status > 0) {
+            jobs++;
+            continue;
+        }
+        if (status < 0 && job_ctx) js_print_exception(job_ctx);
+        if (jobs > 0) SDL_Log("Executed %d pending JavaScript job(s)", jobs);
+        return;
+    }
 }
 
 /* --- public API for main.c --- */
@@ -2039,9 +2309,8 @@ void js_call_onUpdate_dt(JSContext *ctx, float dt)
     if (JS_IsUndefined(g_onUpdate)) return;
     JSValue dt_val = JS_NewFloat64(ctx, (double)dt);
     JSValue ret = JS_Call(ctx, g_onUpdate, JS_UNDEFINED, 1, &dt_val);
-    if (JS_IsException(ret)) js_print_exception(ctx);
     JS_FreeValue(ctx, dt_val);
-    JS_FreeValue(ctx, ret);
+    js_complete_callback(ctx, ret);
 }
 void js_call_onRender(JSContext *ctx) { js_call_void(ctx, g_onRender); }
 

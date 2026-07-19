@@ -180,7 +180,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     file(GLOB_RECURSE JS_BUNDLE_FILES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/dist/*"
-        "${CMAKE_CURRENT_SOURCE_DIR}/res/*")
+        "${CMAKE_CURRENT_SOURCE_DIR}/../res/*")
 
     foreach(bundle_file IN LISTS JS_BUNDLE_FILES)
         file(RELATIVE_PATH bundle_path "${CMAKE_CURRENT_SOURCE_DIR}" "${bundle_file}")

@@ -43,6 +43,11 @@ function runSdl3jsPlugin() {
       child.on('error', (err) => {
         console.error('[run-sdl3js] Failed to start sdl3js:', err)
       })
+      child.on('exit', (code, signal) => {
+        if (code && code !== 0) {
+          console.error(`[run-sdl3js] sdl3js exited with code ${code}${signal ? ` (${signal})` : ''}`)
+        }
+      })
     },
   }
 }

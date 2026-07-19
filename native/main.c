@@ -39,17 +39,31 @@ static bool evaluate_bundle(JSContext *ctx)
 {
     const char *base_path = SDL_GetBasePath();
     char *bundle_path = NULL;
+    char *development_bundle_path = NULL;
+    const char *loaded_bundle_path = bundle_path ? bundle_path : "dist/main.js";
     if (base_path) SDL_asprintf(&bundle_path, "%sdist/main.js", base_path);
+    if (base_path) SDL_asprintf(&development_bundle_path, "%s../dist/main.js", base_path);
 
     size_t length = 0;
+    SDL_Log("Loading JavaScript bundle from %s", bundle_path ? bundle_path : "dist/main.js");
     void *contents = SDL_LoadFile(
         bundle_path ? bundle_path : "dist/main.js",
         &length);
-    if (!contents && bundle_path) {
-        contents = SDL_LoadFile("dist/main.js", &length);
+    if (contents) {
+        loaded_bundle_path = bundle_path;
+    } else if (development_bundle_path) {
+        SDL_Log("Bundle not found; trying %s", development_bundle_path);
+        contents = SDL_LoadFile(development_bundle_path, &length);
+        if (contents) loaded_bundle_path = development_bundle_path;
     }
-    SDL_free(bundle_path);
     if (!contents) {
+        SDL_Log("Bundle not found; trying dist/main.js from the working directory");
+        contents = SDL_LoadFile("dist/main.js", &length);
+        if (contents) loaded_bundle_path = "dist/main.js";
+    }
+    if (!contents) {
+        SDL_free(bundle_path);
+        SDL_free(development_bundle_path);
         SDL_LogError(
             SDL_LOG_CATEGORY_APPLICATION,
             "Cannot load dist/main.js: %s (run: bun run build)",
@@ -57,21 +71,48 @@ static bool evaluate_bundle(JSContext *ctx)
         return false;
     }
 
-    JSValue result = JS_Eval(
+    SDL_Log("Loaded JavaScript bundle from %s (%zu bytes)", loaded_bundle_path, length);
+    SDL_free(bundle_path);
+    SDL_free(development_bundle_path);
+
+    JSValue module = JS_Eval(
         ctx,
         contents,
         length,
         "dist/main.js",
-        JS_EVAL_TYPE_MODULE);
+        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     SDL_free(contents);
 
+    if (JS_IsException(module)) {
+        print_js_exception(ctx);
+        JS_FreeValue(ctx, module);
+        return false;
+    }
+
+    if (JS_ResolveModule(ctx, module) < 0) {
+        print_js_exception(ctx);
+        JS_FreeValue(ctx, module);
+        return false;
+    }
+
+    JSValue result = JS_EvalFunction(ctx, module);
     if (JS_IsException(result)) {
         print_js_exception(ctx);
         JS_FreeValue(ctx, result);
         return false;
     }
-
+    SDL_Log("JavaScript module execution returned tag %d", JS_VALUE_GET_TAG(result));
+    js_execute_pending_job(JS_GetRuntime(ctx));
+    JSPromiseStateEnum promise_state = JS_PromiseState(ctx, result);
+    SDL_Log("JavaScript module promise state %d", promise_state);
+    if (promise_state == JS_PROMISE_REJECTED) {
+        JS_Throw(ctx, JS_PromiseResult(ctx, result));
+        print_js_exception(ctx);
+        JS_FreeValue(ctx, result);
+        return false;
+    }
     JS_FreeValue(ctx, result);
+    SDL_Log("JavaScript bundle initialized");
     return true;
 }
 
@@ -87,6 +128,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
             SDL_GetError());
         return SDL_APP_FAILURE;
     }
+    SDL_Log("SDL initialized (video driver: %s)", SDL_GetCurrentVideoDriver());
 
     AppState *state = SDL_calloc(1, sizeof(*state));
     if (!state) {
@@ -102,6 +144,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     if (!state->runtime || !state->context ||
         js_init_sdl3(state->context) < 0 ||
         !evaluate_bundle(state->context)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Native startup failed");
         if (state->context) {
             js_sdl3_shutdown(state->context);
             JS_FreeContext(state->context);
@@ -112,7 +155,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         return SDL_APP_FAILURE;
     }
 
+    js_execute_pending_job(state->runtime);
     js_call_onInit(state->context);
+    SDL_Log("JavaScript onInit callback completed");
     *appstate = state;
     return SDL_APP_CONTINUE;
 }
