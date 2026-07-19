@@ -216,16 +216,18 @@ static b2ShapeDef js_shape_def(JSContext *ctx, int argc, JSValueConst *argv, int
 }
 
 static void js_draw_polygon(
+    b2WorldTransform transform,
     const b2Vec2 *vertices,
     int vertex_count,
     b2HexColor color,
     void *data)
 {
-    js_debug_append_polygon(data, b2Transform_identity, vertices, vertex_count, color, false);
+    js_debug_append_polygon(
+        data, b2ToRelativeTransform(transform, b2Pos_zero), vertices, vertex_count, color, false);
 }
 
 static void js_draw_solid_polygon(
-    b2Transform transform,
+    b2WorldTransform transform,
     const b2Vec2 *vertices,
     int vertex_count,
     float radius,
@@ -233,40 +235,46 @@ static void js_draw_solid_polygon(
     void *data)
 {
     (void)radius;
-    js_debug_append_polygon(data, transform, vertices, vertex_count, color, true);
+    js_debug_append_polygon(
+        data, b2ToRelativeTransform(transform, b2Pos_zero), vertices, vertex_count, color, true);
 }
 
-static void js_draw_circle(b2Vec2 center, float radius, b2HexColor color, void *data)
+static void js_draw_circle(b2Pos center, float radius, b2HexColor color, void *data)
 {
-    js_debug_append_circle(data, center, radius, color, false);
+    js_debug_append_circle(data, (b2Vec2){(float)center.x, (float)center.y}, radius, color, false);
 }
 
 static void js_draw_solid_circle(
-    b2Transform transform,
+    b2WorldTransform transform,
+    b2Vec2 center,
     float radius,
     b2HexColor color,
     void *data)
 {
-    b2Vec2 world_center = b2TransformPoint(transform, (b2Vec2){0.0f, 0.0f});
-    js_debug_append_circle(data, world_center, radius, color, true);
+    b2Pos world_center = b2TransformWorldPoint(transform, center);
+    js_debug_append_circle(
+        data, (b2Vec2){(float)world_center.x, (float)world_center.y}, radius, color, true);
 }
 
 static void js_draw_solid_capsule(
-    b2Vec2 p1, b2Vec2 p2, float radius, b2HexColor color, void *data)
+    b2Pos p1, b2Pos p2, float radius, b2HexColor color, void *data)
 {
-    js_debug_append_line(data, p1, p2, color);
-    js_debug_append_circle(data, p1, radius, color, true);
-    js_debug_append_circle(data, p2, radius, color, true);
+    b2Vec2 start = {(float)p1.x, (float)p1.y};
+    b2Vec2 end = {(float)p2.x, (float)p2.y};
+    js_debug_append_line(data, start, end, color);
+    js_debug_append_circle(data, start, radius, color, true);
+    js_debug_append_circle(data, end, radius, color, true);
 }
 
-static void js_draw_line(b2Vec2 p1, b2Vec2 p2, b2HexColor color, void *data)
+static void js_draw_line(b2Pos p1, b2Pos p2, b2HexColor color, void *data)
 {
-    js_debug_append_line(data, p1, p2, color);
+    js_debug_append_line(
+        data, (b2Vec2){(float)p1.x, (float)p1.y}, (b2Vec2){(float)p2.x, (float)p2.y}, color);
 }
 
-static void js_draw_transform(b2Transform transform, void *data)
+static void js_draw_transform(b2WorldTransform transform, void *data)
 {
-    b2Vec2 origin = transform.p;
+    b2Vec2 origin = {(float)transform.p.x, (float)transform.p.y};
     b2Vec2 x_axis = {
         origin.x + 0.35f * transform.q.c,
         origin.y + 0.35f * transform.q.s,
@@ -279,7 +287,7 @@ static void js_draw_transform(b2Transform transform, void *data)
     js_debug_append_line(data, origin, y_axis, b2_colorBox2DGreen);
 }
 
-static void js_draw_point(b2Vec2 p, float size, b2HexColor color, void *data)
+static void js_draw_point(b2Pos p, float size, b2HexColor color, void *data)
 {
     JSContext *ctx = ((JsDebugDrawContext *)data)->ctx;
     JsDebugDrawContext *context = data;
@@ -616,7 +624,7 @@ static JSValue js_getDebugDraw(JSContext *ctx, JSValueConst this_val, int argc, 
     draw.DrawCircleFcn = js_draw_circle;
     draw.DrawSolidCircleFcn = js_draw_solid_circle;
     draw.DrawSolidCapsuleFcn = js_draw_solid_capsule;
-    draw.DrawSegmentFcn = js_draw_line;
+    draw.DrawLineFcn = js_draw_line;
     draw.DrawTransformFcn = js_draw_transform;
     draw.DrawPointFcn = js_draw_point;
     draw.drawShapes = true;

@@ -41,6 +41,7 @@ static TextureAsset g_textures[MAX_TEXTURES];
 #define MAX_FONTS 64
 typedef struct FontAsset {
     FT_Face face;
+    void *data;
     char *path;
     int ptsize;
     int refs;
@@ -275,6 +276,7 @@ static void release_font_id(int id)
     FontAsset *asset = &g_fonts[id];
     if (--asset->refs > 0) return;
     FT_Done_Face(asset->face);
+    SDL_free(asset->data);
     free(asset->path);
     memset(asset, 0, sizeof(*asset));
 }
@@ -943,38 +945,34 @@ static JSValue js_loadFont(
         return JS_NewInt32(ctx, -1);
     }
 
-    char *resolved_path = resolve_resource_path(path);
+    size_t length = 0;
+    void *data = load_file_contents(path, &length);
     FT_Face face = NULL;
-    if (resolved_path) {
-        FT_New_Face(g_ft_library, resolved_path, 0, &face);
+    if (data) {
+        FT_New_Memory_Face(g_ft_library, data, (FT_Long)length, 0, &face);
     }
-    if (!face && resolved_path && strcmp(resolved_path, path) != 0) {
-        FT_New_Face(g_ft_library, path, 0, &face);
-    }
-    char *prefixed_path = resource_prefixed_path(path);
-    if (!face && prefixed_path) {
-        FT_New_Face(g_ft_library, prefixed_path, 0, &face);
-    }
-    free(prefixed_path);
-    free(resolved_path);
     if (!face) {
+        SDL_free(data);
         JS_FreeCString(ctx, path);
         return JS_NewInt32(ctx, -1);
     }
     if (FT_Set_Pixel_Sizes(face, 0, (FT_UInt)ptsize) != 0) {
         FT_Done_Face(face);
+        SDL_free(data);
         JS_FreeCString(ctx, path);
         return JS_NewInt32(ctx, -1);
     }
     char *stored_path = copy_string(path);
     if (!stored_path) {
         FT_Done_Face(face);
+        SDL_free(data);
         JS_FreeCString(ctx, path);
         return JS_NewInt32(ctx, -1);
     }
 
     FontAsset *asset = &g_fonts[id];
     asset->face = face;
+    asset->data = data;
     asset->path = stored_path;
     asset->ptsize = ptsize;
     asset->refs = 1;
@@ -1141,10 +1139,15 @@ static JSValue js_loadAudio(
         for (size_t i = 0; i < SDL_arraysize(audio_paths) && !loaded; i++) {
             if (!audio_paths[i]) continue;
 
+            size_t encoded_length = 0;
+            void *encoded = SDL_LoadFile(audio_paths[i], &encoded_length);
+            if (!encoded) continue;
+
             drmp3_config config;
             drmp3_uint64 frame_count;
-            drmp3_int16 *pcm = drmp3_open_file_and_read_pcm_frames_s16(
-                audio_paths[i], &config, &frame_count, NULL);
+            drmp3_int16 *pcm = drmp3_open_memory_and_read_pcm_frames_s16(
+                encoded, encoded_length, &config, &frame_count, NULL);
+            SDL_free(encoded);
             if (!pcm || !config.channels || !config.sampleRate ||
                 frame_count > UINT32_MAX / config.channels / sizeof(*pcm)) {
                 drmp3_free(pcm, NULL);
@@ -2253,6 +2256,7 @@ void js_sdl3_shutdown(JSContext *ctx)
     for (int i = 0; i < MAX_FONTS; i++) {
         if (g_fonts[i].face) {
             FT_Done_Face(g_fonts[i].face);
+            SDL_free(g_fonts[i].data);
             free(g_fonts[i].path);
             memset(&g_fonts[i], 0, sizeof(g_fonts[i]));
         }

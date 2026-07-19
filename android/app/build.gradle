@@ -9,9 +9,13 @@ if (keystorePropertiesFile.exists()) {
 }
 
 def generatedAssets = layout.buildDirectory.dir("generated/gameAssets")
+def nativeProjectDir = rootProject.projectDir.parentFile
+def gameProjectDir = nativeProjectDir.parentFile
 def syncGameAssets = tasks.register("syncGameAssets", Sync) {
-    from(rootProject.projectDir.parentFile) {
+    from(nativeProjectDir) {
         include "dist/**"
+    }
+    from(gameProjectDir) {
         include "res/**"
     }
     into(generatedAssets)

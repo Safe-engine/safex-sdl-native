@@ -220,6 +220,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
             js_call_touchMove(ctx, event->tfinger.x, event->tfinger.y);
             break;
         case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_CANCELED:
             js_call_touchEnd(ctx, event->tfinger.x, event->tfinger.y);
             break;
         case SDL_EVENT_TEXT_INPUT:

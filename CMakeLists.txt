@@ -53,6 +53,11 @@ if(JS_SDL_USE_VENDORED)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        # Apple's HVF runtime ships only in the device SDK.  Disable this
+        # optional FreeType driver so an Xcode project generated against the
+        # device SDK can also link when the Simulator destination is selected.
+        set(FT_DISABLE_HVF ON CACHE BOOL "" FORCE)
+
         # SDL_image enables libwebp's desktop webpmux tool, whose install rule
         # is invalid for iOS bundles. Keep the mux library, but skip the CLI.
         cmake_policy(SET CMP0126 NEW)
@@ -184,6 +189,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 
     foreach(bundle_file IN LISTS JS_BUNDLE_FILES)
         file(RELATIVE_PATH bundle_path "${CMAKE_CURRENT_SOURCE_DIR}" "${bundle_file}")
+        if(bundle_path MATCHES "^\\.\\./res/(.+)")
+            set(bundle_path "res/${CMAKE_MATCH_1}")
+        endif()
         get_filename_component(bundle_directory "${bundle_path}" DIRECTORY)
         set_source_files_properties(
             "${bundle_file}"
