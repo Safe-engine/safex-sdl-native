@@ -471,7 +471,11 @@ static JSValue js_createWindow(
             SDL_GetError());
     }
 
-    g_window = SDL_CreateWindow(title, window_w, window_h, 0);
+    SDL_WindowFlags window_flags = 0;
+#ifdef SDL_PLATFORM_IOS
+    window_flags = SDL_WINDOW_FULLSCREEN;
+#endif
+    g_window = SDL_CreateWindow(title, window_w, window_h, window_flags);
     if (!g_window) {
         JS_FreeCString(ctx, title);
         return JS_ThrowInternalError(ctx, "SDL_CreateWindow failed: %s", SDL_GetError());
