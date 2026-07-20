@@ -14,6 +14,8 @@
 /* --- global state --- */
 static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_renderer = NULL;
+static int           g_draw_calls = 0;
+static int           g_vertices = 0;
 static int           g_win_w    = 1280;
 static int           g_win_h    = 720;
 static SDL_RendererLogicalPresentation g_resolution_policy =
@@ -472,7 +474,7 @@ static JSValue js_createWindow(
     }
 
     SDL_WindowFlags window_flags = 0;
-#ifdef SDL_PLATFORM_IOS
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     window_flags = SDL_WINDOW_FULLSCREEN;
 #endif
     g_window = SDL_CreateWindow(title, window_w, window_h, window_flags);
@@ -1401,6 +1403,8 @@ static JSValue js_clear(
     int argc,
     JSValueConst *argv)
 {
+    g_draw_calls = 0;
+    g_vertices = 0;
     SDL_SetRenderDrawColor(g_renderer, 9, 15, 29, 255);
     SDL_RenderClear(g_renderer);
     return JS_UNDEFINED;
@@ -1422,6 +1426,8 @@ static JSValue js_drawTexture(
     if (!valid_texture_id(id)) return JS_UNDEFINED;
     SDL_FRect dst = { (float)dx, (float)dy, 64, 64 };
     SDL_RenderTexture(g_renderer, g_textures[id].texture, NULL, &dst);
+    g_draw_calls++;
+    g_vertices += 4;
     return JS_UNDEFINED;
 }
 
@@ -1465,6 +1471,8 @@ static JSValue js_drawTextureRotated(
     if (flipY) flip |= SDL_FLIP_VERTICAL;
 
     SDL_RenderTextureRotated(g_renderer, texture, NULL, &dst, (double)angle, &center, flip);
+    g_draw_calls++;
+    g_vertices += 4;
     return JS_UNDEFINED;
 }
 
@@ -1513,6 +1521,8 @@ static JSValue js_drawTextureRegionRotated(
     if (flipY) flip |= SDL_FLIP_VERTICAL;
     SDL_RenderTextureRotated(
         g_renderer, texture, &src, &dst, angle, &center, flip);
+    g_draw_calls++;
+    g_vertices += 4;
     return JS_UNDEFINED;
 }
 
@@ -1553,6 +1563,8 @@ static JSValue js_drawTextureQuad(
     }
     int indices[6] = { 0, 1, 2, 2, 1, 3 };
     SDL_RenderGeometry(g_renderer, g_textures[id].texture, vertices, 4, indices, 6);
+    g_draw_calls++;
+    g_vertices += 4;
     return JS_UNDEFINED;
 }
 
@@ -1644,6 +1656,8 @@ static JSValue js_drawTextureMesh(
     SDL_RenderGeometry(
         g_renderer, g_textures[id].texture, g_mesh_vertices, vertex_count,
         g_mesh_indices, index_count);
+    g_draw_calls++;
+    g_vertices += vertex_count;
 
 cleanup:
     JS_FreeValue(ctx, position_buffer);
@@ -1679,6 +1693,8 @@ static JSValue js_drawRect(
         (float)x, (float)y, (float)width, (float)height
     };
     SDL_RenderFillRect(g_renderer, &rect);
+    g_draw_calls++;
+    g_vertices += 4;
     return JS_UNDEFINED;
 }
 
@@ -1713,6 +1729,8 @@ static JSValue js_drawLine(
 
     js_set_draw_color(red, green, blue, alpha);
     SDL_RenderLine(g_renderer, (float)x1, (float)y1, (float)x2, (float)y2);
+    g_draw_calls++;
+    g_vertices += 2;
     return JS_UNDEFINED;
 }
 
@@ -1733,6 +1751,8 @@ static JSValue js_drawPoint(
 
     js_set_draw_color(red, green, blue, alpha);
     SDL_RenderPoint(g_renderer, (float)x, (float)y);
+    g_draw_calls++;
+    g_vertices++;
     return JS_UNDEFINED;
 }
 
@@ -1768,9 +1788,13 @@ static JSValue js_drawCircle(
                 (float)(cy + dy),
                 (float)(cx + dx_limit),
                 (float)(cy + dy));
+            g_draw_calls++;
+            g_vertices += 2;
         } else {
             SDL_RenderPoint(g_renderer, (float)(cx - dx_limit), (float)(cy + dy));
             SDL_RenderPoint(g_renderer, (float)(cx + dx_limit), (float)(cy + dy));
+            g_draw_calls += 2;
+            g_vertices += 2;
         }
     }
     return JS_UNDEFINED;
@@ -1818,6 +1842,8 @@ static JSValue js_drawPolyline(
             g_renderer,
             (float)previous_x, (float)previous_y,
             (float)x, (float)y);
+        g_draw_calls++;
+        g_vertices += 2;
         previous_x = x;
         previous_y = y;
     }
@@ -1826,6 +1852,8 @@ static JSValue js_drawPolyline(
             g_renderer,
             (float)previous_x, (float)previous_y,
             (float)first_x, (float)first_y);
+        g_draw_calls++;
+        g_vertices += 2;
     }
     return JS_UNDEFINED;
 }
@@ -1882,6 +1910,23 @@ static JSValue js_present(
 {
     SDL_RenderPresent(g_renderer);
     return JS_UNDEFINED;
+}
+
+static JSValue js_getRendererStats(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    (void)this_val;
+    (void)argc;
+    (void)argv;
+    JSValue stats = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, stats, "fps", JS_NewFloat64(ctx, 0));
+    JS_SetPropertyStr(ctx, stats, "frameTimeMs", JS_NewFloat64(ctx, 0));
+    JS_SetPropertyStr(ctx, stats, "drawCalls", JS_NewInt32(ctx, g_draw_calls));
+    JS_SetPropertyStr(ctx, stats, "vertices", JS_NewInt32(ctx, g_vertices));
+    return stats;
 }
 
 /* --- Binding: onInit(cb) --- */
@@ -2098,6 +2143,7 @@ static const JSCFunctionListEntry funcs[] =
     JS_CFUNC_DEF("pushClipRect",            4, js_pushClipRect),
     JS_CFUNC_DEF("popClipRect",             0, js_popClipRect),
     JS_CFUNC_DEF("present",                 0, js_present),
+    JS_CFUNC_DEF("getRendererStats",        0, js_getRendererStats),
     JS_CFUNC_DEF("onInit",                  1, js_onInit),
     JS_CFUNC_DEF("onUpdate",                1, js_onUpdate),
     JS_CFUNC_DEF("onRender",                1, js_onRender),

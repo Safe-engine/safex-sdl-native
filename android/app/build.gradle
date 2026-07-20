@@ -36,7 +36,7 @@ android {
         externalNativeBuild {
             cmake {
                 arguments "-DJS_SDL_USE_VENDORED=ON"
-                abiFilters "arm64-v8a", "x86_64"
+                abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
             }
         }
     }
