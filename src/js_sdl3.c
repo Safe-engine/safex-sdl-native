@@ -38,6 +38,11 @@ typedef struct TextureAsset {
 
 static TextureAsset g_textures[MAX_TEXTURES];
 
+static SDL_Vertex *g_mesh_vertices = NULL;
+static int *g_mesh_indices = NULL;
+static int g_mesh_vertex_capacity = 0;
+static int g_mesh_index_capacity = 0;
+
 #define MAX_FONTS 64
 typedef struct FontAsset {
     FT_Face face;
@@ -1547,6 +1552,102 @@ static JSValue js_drawTextureQuad(
     return JS_UNDEFINED;
 }
 
+/* --- Binding: drawTextureMesh(id, positions, uvs, indices, red, green, blue, alpha) --- */
+static JSValue js_drawTextureMesh(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    int id;
+    size_t position_offset, position_length, position_size;
+    size_t uv_offset, uv_length, uv_size;
+    size_t index_offset, index_length, index_size;
+    size_t position_buffer_size, uv_buffer_size, index_buffer_size;
+    double red = 255, green = 255, blue = 255, alpha = 255;
+
+    (void)this_val;
+    if (argc < 4) return JS_UNDEFINED;
+    JS_ToInt32(ctx, &id, argv[0]);
+    if (!valid_texture_id(id)
+        || JS_GetTypedArrayType(argv[1]) != JS_TYPED_ARRAY_FLOAT32
+        || JS_GetTypedArrayType(argv[2]) != JS_TYPED_ARRAY_FLOAT32
+        || JS_GetTypedArrayType(argv[3]) != JS_TYPED_ARRAY_UINT16) {
+        return JS_UNDEFINED;
+    }
+    if (argc > 4) JS_ToFloat64(ctx, &red, argv[4]);
+    if (argc > 5) JS_ToFloat64(ctx, &green, argv[5]);
+    if (argc > 6) JS_ToFloat64(ctx, &blue, argv[6]);
+    if (argc > 7) JS_ToFloat64(ctx, &alpha, argv[7]);
+
+    JSValue position_buffer = JS_GetTypedArrayBuffer(
+        ctx, argv[1], &position_offset, &position_length, &position_size);
+    JSValue uv_buffer = JS_GetTypedArrayBuffer(
+        ctx, argv[2], &uv_offset, &uv_length, &uv_size);
+    JSValue index_buffer = JS_GetTypedArrayBuffer(
+        ctx, argv[3], &index_offset, &index_length, &index_size);
+    uint8_t *positions = JS_GetArrayBuffer(ctx, &position_buffer_size, position_buffer);
+    uint8_t *uvs = JS_GetArrayBuffer(ctx, &uv_buffer_size, uv_buffer);
+    uint8_t *indices = JS_GetArrayBuffer(ctx, &index_buffer_size, index_buffer);
+
+    if (!positions || !uvs || !indices
+        || position_size != sizeof(float) || uv_size != sizeof(float)
+        || index_size != sizeof(uint16_t) || position_length != uv_length
+        || position_length % (sizeof(float) * 2) != 0
+        || index_length % (sizeof(uint16_t) * 3) != 0) {
+        JS_FreeValue(ctx, position_buffer);
+        JS_FreeValue(ctx, uv_buffer);
+        JS_FreeValue(ctx, index_buffer);
+        return JS_UNDEFINED;
+    }
+
+    int vertex_count = (int)(position_length / (sizeof(float) * 2));
+    int index_count = (int)(index_length / sizeof(uint16_t));
+    if (vertex_count <= 0 || index_count <= 0) goto cleanup;
+    if (vertex_count > g_mesh_vertex_capacity) {
+        SDL_Vertex *vertices = SDL_realloc(g_mesh_vertices, (size_t)vertex_count * sizeof(SDL_Vertex));
+        if (!vertices) goto cleanup;
+        g_mesh_vertices = vertices;
+        g_mesh_vertex_capacity = vertex_count;
+    }
+    if (index_count > g_mesh_index_capacity) {
+        int *mesh_indices = SDL_realloc(g_mesh_indices, (size_t)index_count * sizeof(int));
+        if (!mesh_indices) goto cleanup;
+        g_mesh_indices = mesh_indices;
+        g_mesh_index_capacity = index_count;
+    }
+
+    SDL_FColor color = {
+        (float)(SDL_clamp(red, 0, 255) / 255.0),
+        (float)(SDL_clamp(green, 0, 255) / 255.0),
+        (float)(SDL_clamp(blue, 0, 255) / 255.0),
+        (float)(SDL_clamp(alpha, 0, 255) / 255.0),
+    };
+    const float *position_data = (const float *)(positions + position_offset);
+    const float *uv_data = (const float *)(uvs + uv_offset);
+    const uint16_t *index_data = (const uint16_t *)(indices + index_offset);
+    for (int i = 0; i < vertex_count; i++) {
+        g_mesh_vertices[i].position.x = position_data[i * 2];
+        g_mesh_vertices[i].position.y = position_data[i * 2 + 1];
+        g_mesh_vertices[i].color = color;
+        g_mesh_vertices[i].tex_coord.x = uv_data[i * 2];
+        g_mesh_vertices[i].tex_coord.y = uv_data[i * 2 + 1];
+    }
+    for (int i = 0; i < index_count; i++) {
+        if (index_data[i] >= vertex_count) goto cleanup;
+        g_mesh_indices[i] = index_data[i];
+    }
+    SDL_RenderGeometry(
+        g_renderer, g_textures[id].texture, g_mesh_vertices, vertex_count,
+        g_mesh_indices, index_count);
+
+cleanup:
+    JS_FreeValue(ctx, position_buffer);
+    JS_FreeValue(ctx, uv_buffer);
+    JS_FreeValue(ctx, index_buffer);
+    return JS_UNDEFINED;
+}
+
 static JSValue js_drawRect(
     JSContext *ctx,
     JSValueConst this_val,
@@ -1984,6 +2085,7 @@ static const JSCFunctionListEntry funcs[] =
     JS_CFUNC_DEF("drawTextureRotated",     14, js_drawTextureRotated),
     JS_CFUNC_DEF("drawTextureRegionRotated", 18, js_drawTextureRegionRotated),
     JS_CFUNC_DEF("drawTextureQuad",        21, js_drawTextureQuad),
+    JS_CFUNC_DEF("drawTextureMesh",         8, js_drawTextureMesh),
     JS_CFUNC_DEF("drawRect",                8, js_drawRect),
     JS_CFUNC_DEF("drawLine",                8, js_drawLine),
     JS_CFUNC_DEF("drawPoint",               6, js_drawPoint),
@@ -2274,6 +2376,12 @@ void js_sdl3_shutdown(JSContext *ctx)
             memset(&g_audio_assets[i], 0, sizeof(g_audio_assets[i]));
         }
     }
+    SDL_free(g_mesh_vertices);
+    SDL_free(g_mesh_indices);
+    g_mesh_vertices = NULL;
+    g_mesh_indices = NULL;
+    g_mesh_vertex_capacity = 0;
+    g_mesh_index_capacity = 0;
 
     if (g_renderer) {
         SDL_DestroyRenderer(g_renderer);
