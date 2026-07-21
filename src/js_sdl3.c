@@ -498,6 +498,14 @@ static JSValue js_createWindow(
         g_window = NULL;
         return JS_ThrowInternalError(ctx, "SDL_CreateRenderer failed: %s", SDL_GetError());
     }
+#if defined(SDL_PLATFORM_ANDROID)
+    if (!SDL_SetRenderVSync(g_renderer, 1)) {
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_RENDER,
+            "Could not enable Android renderer vsync: %s",
+            SDL_GetError());
+    }
+#endif
     SDL_SetWindowPosition(
         g_window,
         SDL_WINDOWPOS_CENTERED,
@@ -1675,7 +1683,7 @@ static JSValue js_drawTextureQuad(
     return JS_UNDEFINED;
 }
 
-/* --- Binding: drawTextureMesh(id, positions, uvs, indices, red, green, blue, alpha) --- */
+/* --- Binding: drawTextureMesh(id, positions, uvs, indices, color, transform) --- */
 static JSValue js_drawTextureMesh(
     JSContext *ctx,
     JSValueConst this_val,
@@ -1688,6 +1696,8 @@ static JSValue js_drawTextureMesh(
     size_t index_offset, index_length, index_size;
     size_t position_buffer_size, uv_buffer_size, index_buffer_size;
     double red = 255, green = 255, blue = 255, alpha = 255;
+    double translate_x = 0, translate_y = 0;
+    double scale_x = 1, scale_y = 1, cosine = 1, sine = 0;
 
     (void)this_val;
     if (argc < 4) return JS_UNDEFINED;
@@ -1702,6 +1712,12 @@ static JSValue js_drawTextureMesh(
     if (argc > 5) JS_ToFloat64(ctx, &green, argv[5]);
     if (argc > 6) JS_ToFloat64(ctx, &blue, argv[6]);
     if (argc > 7) JS_ToFloat64(ctx, &alpha, argv[7]);
+    if (argc > 8) JS_ToFloat64(ctx, &translate_x, argv[8]);
+    if (argc > 9) JS_ToFloat64(ctx, &translate_y, argv[9]);
+    if (argc > 10) JS_ToFloat64(ctx, &scale_x, argv[10]);
+    if (argc > 11) JS_ToFloat64(ctx, &scale_y, argv[11]);
+    if (argc > 12) JS_ToFloat64(ctx, &cosine, argv[12]);
+    if (argc > 13) JS_ToFloat64(ctx, &sine, argv[13]);
 
     JSValue position_buffer = JS_GetTypedArrayBuffer(
         ctx, argv[1], &position_offset, &position_length, &position_size);
@@ -1744,8 +1760,12 @@ static JSValue js_drawTextureMesh(
         }
     }
     for (int i = 0; i < vertex_count; i++) {
-        g_input_vertices[i].position.x = position_data[i * 2];
-        g_input_vertices[i].position.y = position_data[i * 2 + 1];
+        double x = (double)position_data[i * 2] * scale_x;
+        double y = (double)position_data[i * 2 + 1] * scale_y;
+        g_input_vertices[i].position.x =
+            (float)(translate_x + x * cosine - y * sine);
+        g_input_vertices[i].position.y =
+            (float)(translate_y + x * sine + y * cosine);
         g_input_vertices[i].color = color;
         g_input_vertices[i].tex_coord.x = uv_data[i * 2];
         g_input_vertices[i].tex_coord.y = uv_data[i * 2 + 1];
@@ -2274,9 +2294,10 @@ static const JSCFunctionListEntry funcs[] =
 
 static int js_sdl3_init(JSContext *ctx, JSModuleDef *m)
 {
-    return JS_SetModuleExportList(
+    if (JS_SetModuleExportList(
         ctx, m, funcs,
-        sizeof(funcs) / sizeof(JSCFunctionListEntry));
+        sizeof(funcs) / sizeof(JSCFunctionListEntry)) < 0) return -1;
+    return JS_SetModuleExport(ctx, m, "isNative", JS_TRUE);
 }
 
 JSModuleDef* js_init_module_sdl3(JSContext *ctx, const char *module_name)
@@ -2285,6 +2306,7 @@ JSModuleDef* js_init_module_sdl3(JSContext *ctx, const char *module_name)
     JS_AddModuleExportList(
         ctx, m, funcs,
         sizeof(funcs) / sizeof(JSCFunctionListEntry));
+    JS_AddModuleExport(ctx, m, "isNative");
     return m;
 }
 

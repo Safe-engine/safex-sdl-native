@@ -66,8 +66,9 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
 {
     const char *source =
         "import {"
-        "  drawTexture, drawTextureRegionRotated, drawTextureRotated,"
-        "  getTextureHeight, getTextureWidth, isAudioPlaying, loadTextFile,"
+        "  drawTexture, drawTextureMesh, drawTextureRegionRotated, drawTextureRotated,"
+        "  getTextureHeight, getTextureWidth, isAudioPlaying, isNative,"
+        "  loadTextFile,"
         "  onBackground, onForeground, onInit, onInterruption, onLowMemory,"
         "  onOrientationChange, onPause, onRender, onResume, onTerminate,"
         "  onTouchEnd, onTouchMove, onTouchStart, onUpdate, pauseAudio,"
@@ -75,6 +76,7 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
         "  setAudioVolume, stopAudio, updateAudio"
         "} from 'sdl3';"
         "globalThis.calls = [];"
+        "globalThis.nativeRuntime = isNative;"
         "globalThis.invalids = ["
         "  getTextureWidth(-1),"
         "  getTextureHeight(999),"
@@ -90,6 +92,9 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
         "setAudioVolume(-1, 0.5);"
         "updateAudio();"
         "drawTexture(-1, 1, 2);"
+        "drawTextureMesh(-1, new Float32Array([0, 0, 1, 0, 0, 1]),"
+        "  new Float32Array([0, 0, 1, 0, 0, 1]), new Uint16Array([0, 1, 2]),"
+        "  255, 255, 255, 255, 10, 20, 2, 3, 1, 0);"
         "drawTextureRotated(-1, 1, 2, 3, 4, 5, 6, 7, 1, 0);"
         "drawTextureRegionRotated(-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1);"
         "onInit(() => calls.push(['init']));"
@@ -153,6 +158,15 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
         "[0,0,false,null]");
     JS_FreeCString(ctx, invalids_json);
     JS_FreeValue(ctx, invalids);
+
+    JSValue native_runtime = eval_js(
+        ctx,
+        "globalThis.nativeRuntime",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true(
+        "sdl3 identifies the native runtime",
+        JS_ToBool(ctx, native_runtime));
+    JS_FreeValue(ctx, native_runtime);
 }
 
 static void test_development_resource_path(JSContext *ctx)

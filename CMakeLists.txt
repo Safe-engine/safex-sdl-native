@@ -126,6 +126,14 @@ elseif(TARGET quickjs)
     set(QUICKJS_TARGET quickjs)
 endif()
 
+if(ANDROID)
+    # QuickJS-NG deliberately uses -O0 for Debug builds. That makes interpreted
+    # animation workloads unusably slow on 32-bit ARM devices, so keep debug
+    # symbols while optimizing the runtime and the native JS bridge.
+    target_compile_options(qjs PRIVATE $<$<CONFIG:Debug>:-O2>)
+    target_compile_options(${JS_SDL_TARGET} PRIVATE $<$<CONFIG:Debug>:-O2>)
+endif()
+
 target_link_libraries(
     ${JS_SDL_TARGET}
     PRIVATE
