@@ -40,6 +40,7 @@ typedef struct TextureAsset
   int height;
   TextureKind kind;
   int font_id;
+  bool pma;
 } TextureAsset;
 
 static TextureAsset g_textures[MAX_TEXTURES];
@@ -493,6 +494,7 @@ typedef struct LoadTextureTaskArgs
 {
   const char *path;
   SDL_Texture *texture;
+  bool pma;
 } LoadTextureTaskArgs;
 
 static void load_texture_main_thread(void *userdata)
@@ -504,13 +506,17 @@ static void load_texture_main_thread(void *userdata)
     return;
   }
   args->texture = IMG_LoadTexture(g_renderer, args->path);
+  if (args->texture && args->pma)
+  {
+    SDL_SetTextureBlendMode(args->texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+  }
 }
 
-static SDL_Texture *load_texture_on_main_thread(const char *path)
+static SDL_Texture *load_texture_on_main_thread(const char *path, bool pma)
 {
   if (!path)
     return NULL;
-  LoadTextureTaskArgs task_args = {.path = path, .texture = NULL};
+  LoadTextureTaskArgs task_args = {.path = path, .texture = NULL, .pma = pma};
   js_run_on_main_thread(load_texture_main_thread, &task_args);
   return task_args.texture;
 }
@@ -1171,7 +1177,7 @@ static JSValue js_loadBinaryFile(
   return result;
 }
 
-/* --- Binding: loadTexture(path) → id --- */
+/* --- Binding: loadTexture(path, pma?) → id --- */
 static JSValue js_loadTexture(
     JSContext *ctx,
     JSValueConst this_val,
@@ -1182,10 +1188,17 @@ static JSValue js_loadTexture(
   if (!path)
     return JS_EXCEPTION;
 
+  bool pma = false;
+  if (argc >= 2)
+  {
+    pma = JS_ToBool(ctx, argv[1]);
+  }
+
   for (int i = 0; i < MAX_TEXTURES; i++)
   {
     TextureAsset *asset = &g_textures[i];
     if (asset->texture && asset->kind == TEXTURE_FILE &&
+        asset->pma == pma &&
         strcmp(asset->key, path) == 0)
     {
       asset->refs++;
@@ -1203,16 +1216,16 @@ static JSValue js_loadTexture(
 
   char *resolved_path = resolve_resource_path(path);
   SDL_Texture *tex = resolved_path
-                         ? load_texture_on_main_thread(resolved_path)
+                         ? load_texture_on_main_thread(resolved_path, pma)
                          : NULL;
   if (!tex && resolved_path && strcmp(resolved_path, path) != 0)
   {
-    tex = load_texture_on_main_thread(path);
+    tex = load_texture_on_main_thread(path, pma);
   }
   char *prefixed_path = resource_prefixed_path(path);
   if (!tex && prefixed_path)
   {
-    tex = load_texture_on_main_thread(prefixed_path);
+    tex = load_texture_on_main_thread(prefixed_path, pma);
   }
   free(prefixed_path);
   free(resolved_path);
@@ -1234,6 +1247,7 @@ static JSValue js_loadTexture(
   asset->key = key;
   asset->refs = 1;
   asset->kind = TEXTURE_FILE;
+  asset->pma = pma;
   float width = 0;
   float height = 0;
   SDL_GetTextureSize(tex, &width, &height);
