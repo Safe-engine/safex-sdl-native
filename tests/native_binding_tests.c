@@ -7,6 +7,13 @@
 
 #include "js_sdl3.h"
 
+void js_run_on_main_thread(js_main_thread_fn fn, void *arg)
+{
+    if (fn) {
+        fn(arg);
+    }
+}
+
 static int failures = 0;
 
 static void print_exception(JSContext *ctx)

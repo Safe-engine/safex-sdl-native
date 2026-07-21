@@ -54,6 +54,23 @@ static int *g_input_indices = NULL;
 static int g_input_vertex_capacity = 0;
 static int g_input_index_capacity = 0;
 
+typedef struct RenderFrame {
+    int32_t *commands;
+    size_t commands_len;
+    float *floats;
+    size_t floats_len;
+    uint32_t *uints;
+    size_t uints_len;
+    uint16_t *shorts;
+    size_t shorts_len;
+} RenderFrame;
+
+static SDL_Mutex *g_render_queue_mutex = NULL;
+static SDL_Condition *g_render_queue_ready = NULL;
+static RenderFrame g_render_frame = { 0 };
+static bool g_render_queue_enabled = false;
+static _Thread_local const RenderFrame *g_executing_render_frame = NULL;
+
 #define MAX_FONTS 64
 typedef struct FontAsset {
     FT_Face face;
@@ -272,6 +289,75 @@ static int find_free_audio_voice_slot(void)
     return -1;
 }
 
+typedef struct LoadTextureTaskArgs {
+    const char *path;
+    SDL_Texture *texture;
+} LoadTextureTaskArgs;
+
+static void load_texture_main_thread(void *userdata)
+{
+    LoadTextureTaskArgs *args = userdata;
+    if (!g_renderer || !args->path) {
+        args->texture = NULL;
+        return;
+    }
+    args->texture = IMG_LoadTexture(g_renderer, args->path);
+}
+
+static SDL_Texture *load_texture_on_main_thread(const char *path)
+{
+    if (!path) return NULL;
+    LoadTextureTaskArgs task_args = { .path = path, .texture = NULL };
+    js_run_on_main_thread(load_texture_main_thread, &task_args);
+    return task_args.texture;
+}
+
+typedef struct CreateTextureFromSurfaceTaskArgs {
+    SDL_Surface *surface;
+    SDL_Texture *texture;
+} CreateTextureFromSurfaceTaskArgs;
+
+static void create_texture_from_surface_main_thread(void *userdata)
+{
+    CreateTextureFromSurfaceTaskArgs *args = userdata;
+    if (!g_renderer || !args->surface) {
+        args->texture = NULL;
+        return;
+    }
+    args->texture = SDL_CreateTextureFromSurface(g_renderer, args->surface);
+}
+
+static SDL_Texture *create_texture_from_surface_on_main_thread(SDL_Surface *surface)
+{
+    if (!surface) return NULL;
+    CreateTextureFromSurfaceTaskArgs task_args = { .surface = surface, .texture = NULL };
+    js_run_on_main_thread(create_texture_from_surface_main_thread, &task_args);
+    return task_args.texture;
+}
+
+static void destroy_texture_main_thread(void *userdata)
+{
+    SDL_Texture *texture = userdata;
+    if (texture) {
+        SDL_DestroyTexture(texture);
+    }
+}
+
+static void destroy_texture_on_main_thread(SDL_Texture *texture)
+{
+    if (!texture) return;
+    js_run_on_main_thread(destroy_texture_main_thread, texture);
+}
+
+static void destroy_renderer_main_thread(void *userdata)
+{
+    (void)userdata;
+    if (g_renderer) {
+        SDL_DestroyRenderer(g_renderer);
+        g_renderer = NULL;
+    }
+}
+
 static void release_font_id(int id);
 static void release_audio_id(int id);
 
@@ -280,7 +366,7 @@ static void release_texture_id(int id)
     if (!valid_texture_id(id)) return;
     TextureAsset *asset = &g_textures[id];
     if (--asset->refs > 0) return;
-    SDL_DestroyTexture(asset->texture);
+    destroy_texture_on_main_thread(asset->texture);
     free(asset->key);
     if (asset->kind == TEXTURE_TEXT) release_font_id(asset->font_id);
     memset(asset, 0, sizeof(*asset));
@@ -440,6 +526,60 @@ static SDL_FRect js_presentation_rect(int screen_w, int screen_h)
     };
 }
 
+typedef struct CreateWindowTaskArgs {
+    const char *title;
+    int window_w;
+    int window_h;
+    SDL_WindowFlags window_flags;
+    bool success;
+    const char *error_msg;
+} CreateWindowTaskArgs;
+
+static void create_window_main_thread(void *userdata)
+{
+    CreateWindowTaskArgs *args = userdata;
+    g_window = SDL_CreateWindow(args->title, args->window_w, args->window_h, args->window_flags);
+    if (!g_window) {
+        args->error_msg = SDL_GetError();
+        return;
+    }
+    g_renderer = SDL_CreateRenderer(g_window, NULL);
+    if (!g_renderer) {
+        args->error_msg = SDL_GetError();
+        SDL_DestroyWindow(g_window);
+        g_window = NULL;
+        return;
+    }
+#if defined(SDL_PLATFORM_ANDROID)
+    if (!SDL_SetRenderVSync(g_renderer, 1)) {
+        SDL_LogWarn(
+            SDL_LOG_CATEGORY_RENDER,
+            "Could not enable Android renderer vsync: %s",
+            SDL_GetError());
+    }
+#endif
+    SDL_SetWindowPosition(
+        g_window,
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED);
+    if (!SDL_ShowWindow(g_window)) {
+        args->error_msg = SDL_GetError();
+        SDL_DestroyRenderer(g_renderer);
+        SDL_DestroyWindow(g_window);
+        g_renderer = NULL;
+        g_window = NULL;
+        return;
+    }
+    SDL_RaiseWindow(g_window);
+    SDL_Log("SDL window is visible and raised");
+    SDL_SetRenderLogicalPresentation(
+        g_renderer,
+        g_win_w,
+        g_win_h,
+        g_resolution_policy);
+    args->success = true;
+}
+
 static JSValue js_createWindow(
     JSContext *ctx,
     JSValueConst this_val,
@@ -486,47 +626,25 @@ static JSValue js_createWindow(
 #if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     window_flags = SDL_WINDOW_FULLSCREEN;
 #endif
-    g_window = SDL_CreateWindow(title, window_w, window_h, window_flags);
-    if (!g_window) {
-        JS_FreeCString(ctx, title);
-        return JS_ThrowInternalError(ctx, "SDL_CreateWindow failed: %s", SDL_GetError());
-    }
-    g_renderer = SDL_CreateRenderer(g_window, NULL);
-    if (!g_renderer) {
-        JS_FreeCString(ctx, title);
-        SDL_DestroyWindow(g_window);
-        g_window = NULL;
-        return JS_ThrowInternalError(ctx, "SDL_CreateRenderer failed: %s", SDL_GetError());
-    }
-#if defined(SDL_PLATFORM_ANDROID)
-    if (!SDL_SetRenderVSync(g_renderer, 1)) {
-        SDL_LogWarn(
-            SDL_LOG_CATEGORY_RENDER,
-            "Could not enable Android renderer vsync: %s",
-            SDL_GetError());
-    }
-#endif
-    SDL_SetWindowPosition(
-        g_window,
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED);
-    if (!SDL_ShowWindow(g_window)) {
-        JS_FreeCString(ctx, title);
-        SDL_DestroyRenderer(g_renderer);
-        SDL_DestroyWindow(g_window);
-        g_renderer = NULL;
-        g_window = NULL;
-        return JS_ThrowInternalError(ctx, "SDL_ShowWindow failed: %s", SDL_GetError());
-    }
-    SDL_RaiseWindow(g_window);
-    SDL_Log("SDL window is visible and raised");
-    SDL_SetRenderLogicalPresentation(
-        g_renderer,
-        g_win_w,
-        g_win_h,
-        g_resolution_policy);
 
+    CreateWindowTaskArgs task_args = {
+        .title = title,
+        .window_w = window_w,
+        .window_h = window_h,
+        .window_flags = window_flags,
+        .success = false,
+        .error_msg = NULL
+    };
+    js_run_on_main_thread(create_window_main_thread, &task_args);
     JS_FreeCString(ctx, title);
+
+    if (!task_args.success) {
+        return JS_ThrowInternalError(
+            ctx,
+            "SDL_CreateWindow failed: %s",
+            task_args.error_msg ? task_args.error_msg : "Unknown error");
+    }
+
     return JS_UNDEFINED;
 }
 
@@ -704,14 +822,14 @@ static JSValue js_loadTexture(
 
     char *resolved_path = resolve_resource_path(path);
     SDL_Texture *tex = resolved_path
-        ? IMG_LoadTexture(g_renderer, resolved_path)
+        ? load_texture_on_main_thread(resolved_path)
         : NULL;
     if (!tex && resolved_path && strcmp(resolved_path, path) != 0) {
-        tex = IMG_LoadTexture(g_renderer, path);
+        tex = load_texture_on_main_thread(path);
     }
     char *prefixed_path = resource_prefixed_path(path);
     if (!tex && prefixed_path) {
-        tex = IMG_LoadTexture(g_renderer, prefixed_path);
+        tex = load_texture_on_main_thread(prefixed_path);
     }
     free(prefixed_path);
     free(resolved_path);
@@ -721,7 +839,7 @@ static JSValue js_loadTexture(
     }
     char *key = copy_string(path);
     if (!key) {
-        SDL_DestroyTexture(tex);
+        destroy_texture_on_main_thread(tex);
         JS_FreeCString(ctx, path);
         return JS_NewInt32(ctx, -1);
     }
@@ -1056,7 +1174,7 @@ static JSValue js_loadTextTexture(
         return JS_NewInt32(ctx, -1);
     }
 
-    SDL_Texture *texture = SDL_CreateTextureFromSurface(g_renderer, surface);
+    SDL_Texture *texture = create_texture_from_surface_on_main_thread(surface);
     if (!texture) {
         SDL_DestroySurface(surface);
         free(key);
@@ -1494,6 +1612,7 @@ static JSValue js_clear(
     int argc,
     JSValueConst *argv)
 {
+    if (g_render_queue_enabled && !g_executing_render_frame) return JS_UNDEFINED;
     flush_draw_batch();
     g_draw_calls = 0;
     g_vertices = 0;
@@ -2027,6 +2146,42 @@ static JSValue js_popClipRect(
     return JS_UNDEFINED;
 }
 
+static void free_render_frame(RenderFrame *frame)
+{
+    SDL_free(frame->commands);
+    SDL_free(frame->floats);
+    SDL_free(frame->uints);
+    SDL_free(frame->shorts);
+    SDL_zero(*frame);
+}
+
+static bool copy_render_frame(
+    RenderFrame *frame,
+    const uint8_t *commands, size_t commands_len,
+    const uint8_t *floats, size_t floats_len,
+    const uint8_t *uints, size_t uints_len,
+    const uint8_t *shorts, size_t shorts_len)
+{
+    frame->commands = SDL_malloc(commands_len);
+    frame->floats = SDL_malloc(floats_len);
+    frame->uints = SDL_malloc(uints_len);
+    frame->shorts = shorts_len ? SDL_malloc(shorts_len) : NULL;
+    if (!frame->commands || !frame->floats || !frame->uints ||
+        (shorts_len && !frame->shorts)) {
+        free_render_frame(frame);
+        return false;
+    }
+    SDL_memcpy(frame->commands, commands, commands_len);
+    SDL_memcpy(frame->floats, floats, floats_len);
+    SDL_memcpy(frame->uints, uints, uints_len);
+    if (shorts_len) SDL_memcpy(frame->shorts, shorts, shorts_len);
+    frame->commands_len = commands_len;
+    frame->floats_len = floats_len;
+    frame->uints_len = uints_len;
+    frame->shorts_len = shorts_len;
+    return true;
+}
+
 /* --- Binding: submitCommandBuffer(buffer) --- */
 static JSValue js_submitCommandBuffer(
     JSContext *ctx,
@@ -2035,28 +2190,87 @@ static JSValue js_submitCommandBuffer(
     JSValueConst *argv)
 {
     (void)this_val;
-    if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+    if (!g_executing_render_frame && (argc < 1 || !JS_IsObject(argv[0]))) {
+        return JS_UNDEFINED;
+    }
 
-    JSValue val_cmds = JS_GetPropertyStr(ctx, argv[0], "commands");
-    JSValue val_floats = JS_GetPropertyStr(ctx, argv[0], "floatBuffer");
-    JSValue val_uints = JS_GetPropertyStr(ctx, argv[0], "uintBuffer");
-    JSValue val_shorts = JS_GetPropertyStr(ctx, argv[0], "shortBuffer");
+    JSValue val_cmds = JS_UNDEFINED;
+    JSValue val_floats = JS_UNDEFINED;
+    JSValue val_uints = JS_UNDEFINED;
+    JSValue val_shorts = JS_UNDEFINED;
 
     size_t cmds_off = 0, cmds_len = 0, cmds_size = 0;
     size_t floats_off = 0, floats_len = 0, floats_size = 0;
     size_t uints_off = 0, uints_len = 0, uints_size = 0;
     size_t shorts_off = 0, shorts_len = 0, shorts_size = 0;
 
-    JSValue buf_cmds = JS_GetTypedArrayBuffer(ctx, val_cmds, &cmds_off, &cmds_len, &cmds_size);
-    JSValue buf_floats = JS_GetTypedArrayBuffer(ctx, val_floats, &floats_off, &floats_len, &floats_size);
-    JSValue buf_uints = JS_GetTypedArrayBuffer(ctx, val_uints, &uints_off, &uints_len, &uints_size);
-    JSValue buf_shorts = JS_GetTypedArrayBuffer(ctx, val_shorts, &shorts_off, &shorts_len, &shorts_size);
+    JSValue buf_cmds = JS_UNDEFINED;
+    JSValue buf_floats = JS_UNDEFINED;
+    JSValue buf_uints = JS_UNDEFINED;
+    JSValue buf_shorts = JS_UNDEFINED;
 
     size_t sz_cmds = 0, sz_floats = 0, sz_uints = 0, sz_shorts = 0;
-    uint8_t *ptr_cmds = JS_GetArrayBuffer(ctx, &sz_cmds, buf_cmds);
-    uint8_t *ptr_floats = JS_GetArrayBuffer(ctx, &sz_floats, buf_floats);
-    uint8_t *ptr_uints = JS_GetArrayBuffer(ctx, &sz_uints, buf_uints);
-    uint8_t *ptr_shorts = JS_GetArrayBuffer(ctx, &sz_shorts, buf_shorts);
+    uint8_t *ptr_cmds = NULL;
+    uint8_t *ptr_floats = NULL;
+    uint8_t *ptr_uints = NULL;
+    uint8_t *ptr_shorts = NULL;
+
+    if (g_executing_render_frame) {
+        ptr_cmds = (uint8_t *)g_executing_render_frame->commands;
+        ptr_floats = (uint8_t *)g_executing_render_frame->floats;
+        ptr_uints = (uint8_t *)g_executing_render_frame->uints;
+        ptr_shorts = (uint8_t *)g_executing_render_frame->shorts;
+        cmds_len = g_executing_render_frame->commands_len;
+        floats_len = g_executing_render_frame->floats_len;
+        uints_len = g_executing_render_frame->uints_len;
+        shorts_len = g_executing_render_frame->shorts_len;
+    } else {
+        val_cmds = JS_GetPropertyStr(ctx, argv[0], "commands");
+        val_floats = JS_GetPropertyStr(ctx, argv[0], "floatBuffer");
+        val_uints = JS_GetPropertyStr(ctx, argv[0], "uintBuffer");
+        val_shorts = JS_GetPropertyStr(ctx, argv[0], "shortBuffer");
+        buf_cmds = JS_GetTypedArrayBuffer(ctx, val_cmds, &cmds_off, &cmds_len, &cmds_size);
+        buf_floats = JS_GetTypedArrayBuffer(ctx, val_floats, &floats_off, &floats_len, &floats_size);
+        buf_uints = JS_GetTypedArrayBuffer(ctx, val_uints, &uints_off, &uints_len, &uints_size);
+        buf_shorts = JS_GetTypedArrayBuffer(ctx, val_shorts, &shorts_off, &shorts_len, &shorts_size);
+        ptr_cmds = JS_GetArrayBuffer(ctx, &sz_cmds, buf_cmds);
+        ptr_floats = JS_GetArrayBuffer(ctx, &sz_floats, buf_floats);
+        ptr_uints = JS_GetArrayBuffer(ctx, &sz_uints, buf_uints);
+        ptr_shorts = JS_GetArrayBuffer(ctx, &sz_shorts, buf_shorts);
+    }
+
+    if (g_render_queue_enabled && !g_executing_render_frame &&
+        ptr_cmds && ptr_floats && ptr_uints) {
+        RenderFrame frame = { 0 };
+        if (copy_render_frame(
+                &frame,
+                ptr_cmds + cmds_off, cmds_len,
+                ptr_floats + floats_off, floats_len,
+                ptr_uints + uints_off, uints_len,
+                ptr_shorts ? ptr_shorts + shorts_off : NULL,
+                ptr_shorts ? shorts_len : 0)) {
+            SDL_LockMutex(g_render_queue_mutex);
+            if (g_render_queue_enabled) {
+                /* Keep latency bounded: a newer completed frame supersedes one
+                   the renderer has not started yet. */
+                free_render_frame(&g_render_frame);
+                g_render_frame = frame;
+                SDL_SignalCondition(g_render_queue_ready);
+            } else {
+                free_render_frame(&frame);
+            }
+            SDL_UnlockMutex(g_render_queue_mutex);
+        }
+        JS_FreeValue(ctx, buf_cmds);
+        JS_FreeValue(ctx, buf_floats);
+        JS_FreeValue(ctx, buf_uints);
+        JS_FreeValue(ctx, buf_shorts);
+        JS_FreeValue(ctx, val_cmds);
+        JS_FreeValue(ctx, val_floats);
+        JS_FreeValue(ctx, val_uints);
+        JS_FreeValue(ctx, val_shorts);
+        return JS_UNDEFINED;
+    }
 
     if (ptr_cmds && ptr_floats && ptr_uints) {
         const int32_t *cmds = (const int32_t *)(ptr_cmds + cmds_off);
@@ -2257,15 +2471,17 @@ static JSValue js_submitCommandBuffer(
         }
     }
 
-    JS_FreeValue(ctx, buf_cmds);
-    JS_FreeValue(ctx, buf_floats);
-    JS_FreeValue(ctx, buf_uints);
-    JS_FreeValue(ctx, buf_shorts);
+    if (!g_executing_render_frame) {
+        JS_FreeValue(ctx, buf_cmds);
+        JS_FreeValue(ctx, buf_floats);
+        JS_FreeValue(ctx, buf_uints);
+        JS_FreeValue(ctx, buf_shorts);
 
-    JS_FreeValue(ctx, val_cmds);
-    JS_FreeValue(ctx, val_floats);
-    JS_FreeValue(ctx, val_uints);
-    JS_FreeValue(ctx, val_shorts);
+        JS_FreeValue(ctx, val_cmds);
+        JS_FreeValue(ctx, val_floats);
+        JS_FreeValue(ctx, val_uints);
+        JS_FreeValue(ctx, val_shorts);
+    }
 
     return JS_UNDEFINED;
 }
@@ -2277,6 +2493,7 @@ static JSValue js_present(
     int argc,
     JSValueConst *argv)
 {
+    if (g_render_queue_enabled && !g_executing_render_frame) return JS_UNDEFINED;
     flush_draw_batch();
     SDL_RenderPresent(g_renderer);
     return JS_UNDEFINED;
@@ -2773,7 +2990,7 @@ void js_sdl3_shutdown(JSContext *ctx)
 
     for (int i = 0; i < MAX_TEXTURES; i++) {
         if (g_textures[i].texture) {
-            SDL_DestroyTexture(g_textures[i].texture);
+            destroy_texture_on_main_thread(g_textures[i].texture);
             free(g_textures[i].key);
             memset(&g_textures[i], 0, sizeof(g_textures[i]));
         }
@@ -2813,8 +3030,7 @@ void js_sdl3_shutdown(JSContext *ctx)
     g_input_index_capacity = 0;
 
     if (g_renderer) {
-        SDL_DestroyRenderer(g_renderer);
-        g_renderer = NULL;
+        js_run_on_main_thread(destroy_renderer_main_thread, NULL);
     }
     if (g_window) {
         SDL_DestroyWindow(g_window);
@@ -2846,6 +3062,65 @@ void js_set_frame_timing(float delta_time)
 {
     g_frame_time_ms = (double)delta_time * 1000.0;
     g_fps = delta_time > 0.0f ? 1.0 / (double)delta_time : 0.0;
+}
+
+bool js_enable_render_queue(void)
+{
+    g_render_queue_mutex = SDL_CreateMutex();
+    g_render_queue_ready = SDL_CreateCondition();
+    if (!g_render_queue_mutex || !g_render_queue_ready) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not create render queue synchronization primitives");
+        SDL_DestroyCondition(g_render_queue_ready);
+        SDL_DestroyMutex(g_render_queue_mutex);
+        g_render_queue_ready = NULL;
+        g_render_queue_mutex = NULL;
+        return false;
+    }
+    g_render_queue_enabled = true;
+    return true;
+}
+
+void js_disable_render_queue(void)
+{
+    if (!g_render_queue_mutex) return;
+    SDL_LockMutex(g_render_queue_mutex);
+    g_render_queue_enabled = false;
+    SDL_BroadcastCondition(g_render_queue_ready);
+    free_render_frame(&g_render_frame);
+    SDL_UnlockMutex(g_render_queue_mutex);
+}
+
+void js_destroy_render_queue(void)
+{
+    if (!g_render_queue_mutex) return;
+    js_disable_render_queue();
+    SDL_DestroyCondition(g_render_queue_ready);
+    SDL_DestroyMutex(g_render_queue_mutex);
+    g_render_queue_ready = NULL;
+    g_render_queue_mutex = NULL;
+}
+
+bool js_render_pending_frame(void)
+{
+    if (!g_render_queue_enabled || !g_render_queue_mutex) return false;
+
+    RenderFrame frame = { 0 };
+    SDL_LockMutex(g_render_queue_mutex);
+    if (g_render_frame.commands) {
+        frame = g_render_frame;
+        SDL_zero(g_render_frame);
+        SDL_SignalCondition(g_render_queue_ready);
+    }
+    SDL_UnlockMutex(g_render_queue_mutex);
+    if (!frame.commands) return false;
+
+    g_executing_render_frame = &frame;
+    js_clear(NULL, JS_UNDEFINED, 0, NULL);
+    js_submitCommandBuffer(NULL, JS_UNDEFINED, 0, NULL);
+    js_present(NULL, JS_UNDEFINED, 0, NULL);
+    g_executing_render_frame = NULL;
+    free_render_frame(&frame);
+    return true;
 }
 
 /* --- public API for main.c --- */

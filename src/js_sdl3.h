@@ -3,10 +3,17 @@
 #include <quickjs.h>
 #include <SDL3/SDL.h>
 
+typedef void (*js_main_thread_fn)(void *arg);
+void js_run_on_main_thread(js_main_thread_fn fn, void *arg);
+
 int  js_init_sdl3(JSContext *ctx);
 void js_sdl3_shutdown(JSContext *ctx);
 void js_execute_pending_job(JSRuntime *rt);
 void js_set_frame_timing(float delta_time);
+bool js_enable_render_queue(void);
+void js_disable_render_queue(void);
+void js_destroy_render_queue(void);
+bool js_render_pending_frame(void);
 
 /* helpers for main.c game loop */
 void js_call_onInit(JSContext *ctx);
