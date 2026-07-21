@@ -16,6 +16,8 @@ static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_renderer = NULL;
 static int           g_draw_calls = 0;
 static int           g_vertices = 0;
+static double        g_fps = 0;
+static double        g_frame_time_ms = 0;
 static int           g_win_w    = 1280;
 static int           g_win_h    = 720;
 static SDL_RendererLogicalPresentation g_resolution_policy =
@@ -2017,8 +2019,8 @@ static JSValue js_getRendererStats(
     (void)argc;
     (void)argv;
     JSValue stats = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, stats, "fps", JS_NewFloat64(ctx, 0));
-    JS_SetPropertyStr(ctx, stats, "frameTimeMs", JS_NewFloat64(ctx, 0));
+    JS_SetPropertyStr(ctx, stats, "fps", JS_NewFloat64(ctx, g_fps));
+    JS_SetPropertyStr(ctx, stats, "frameTimeMs", JS_NewFloat64(ctx, g_frame_time_ms));
     JS_SetPropertyStr(ctx, stats, "drawCalls", JS_NewInt32(ctx, g_draw_calls));
     JS_SetPropertyStr(ctx, stats, "vertices", JS_NewInt32(ctx, g_vertices));
     return stats;
@@ -2562,6 +2564,12 @@ void js_execute_pending_job(JSRuntime *rt)
         if (jobs > 0) SDL_Log("Executed %d pending JavaScript job(s)", jobs);
         return;
     }
+}
+
+void js_set_frame_timing(float delta_time)
+{
+    g_frame_time_ms = (double)delta_time * 1000.0;
+    g_fps = delta_time > 0.0f ? 1.0 / (double)delta_time : 0.0;
 }
 
 /* --- public API for main.c --- */

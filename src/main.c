@@ -139,7 +139,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     state->runtime = JS_NewRuntime();
     state->context = state->runtime ? JS_NewContext(state->runtime) : NULL;
     state->active = true;
-    state->previous_ticks = SDL_GetTicks();
+    state->previous_ticks = SDL_GetTicksNS();
 
     if (!state->runtime || !state->context ||
         js_init_sdl3(state->context) < 0 ||
@@ -253,16 +253,17 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 SDL_AppResult SDL_AppIterate(void *appstate)
 {
     AppState *state = appstate;
-    Uint64 now = SDL_GetTicks();
+    Uint64 now = SDL_GetTicksNS();
     float delta_time = state->reset_frame_clock
         ? 0.0f
-        : (float)(now - state->previous_ticks) / 1000.0f;
+        : (float)(now - state->previous_ticks) / 1000000000.0f;
 
     state->previous_ticks = now;
     state->reset_frame_clock = false;
 
     js_execute_pending_job(state->runtime);
     if (state->active) {
+        js_set_frame_timing(delta_time);
         js_call_onUpdate_dt(state->context, delta_time);
         js_call_onRender(state->context);
     }

@@ -6,6 +6,7 @@
 int  js_init_sdl3(JSContext *ctx);
 void js_sdl3_shutdown(JSContext *ctx);
 void js_execute_pending_job(JSRuntime *rt);
+void js_set_frame_timing(float delta_time);
 
 /* helpers for main.c game loop */
 void js_call_onInit(JSContext *ctx);
