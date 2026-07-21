@@ -143,6 +143,23 @@ target_link_libraries(
         ${QUICKJS_TARGET}
 )
 
+target_compile_definitions(${JS_SDL_TARGET} PRIVATE
+    $<$<CONFIG:Debug>:JS_SDL_ENABLE_PROFILING=1>
+)
+
+target_compile_options(${JS_SDL_TARGET} PRIVATE
+    $<$<AND:$<CONFIG:Release>,$<C_COMPILER_ID:Clang,GNU>>:-O3>
+)
+
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error LANGUAGES C)
+if(ipo_supported)
+    set_property(TARGET ${JS_SDL_TARGET} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+else()
+    message(STATUS "IPO/LTO unavailable: ${ipo_error}")
+endif()
+
+
 set(BOX2D_TARGET "")
 if(ENABLE_BOX2D)
     if(TARGET box2d::box2d)

@@ -54,22 +54,179 @@ static int *g_input_indices = NULL;
 static int g_input_vertex_capacity = 0;
 static int g_input_index_capacity = 0;
 
+typedef enum RenderBufferState {
+    RENDER_BUFFER_FREE = 0,
+    RENDER_BUFFER_WRITING,
+    RENDER_BUFFER_READY,
+    RENDER_BUFFER_READING
+} RenderBufferState;
+
 typedef struct RenderFrame {
     int32_t *commands;
     size_t commands_len;
+    size_t commands_cap;
+
     float *floats;
     size_t floats_len;
+    size_t floats_cap;
+
     uint32_t *uints;
     size_t uints_len;
+    size_t uints_cap;
+
     uint16_t *shorts;
     size_t shorts_len;
+    size_t shorts_cap;
+
+    Uint64 timestamp_ns;
+    RenderBufferState state;
 } RenderFrame;
 
+#define RENDER_BUFFER_COUNT 3
+static RenderFrame g_render_buffers[RENDER_BUFFER_COUNT] = { 0 };
 static SDL_Mutex *g_render_queue_mutex = NULL;
 static SDL_Condition *g_render_queue_ready = NULL;
-static RenderFrame g_render_frame = { 0 };
 static bool g_render_queue_enabled = false;
 static _Thread_local const RenderFrame *g_executing_render_frame = NULL;
+
+typedef struct RenderStateCache {
+    SDL_BlendMode blend_mode;
+    bool has_blend_mode;
+    Uint8 r, g, b, a;
+    bool has_draw_color;
+    SDL_Rect clip_rect;
+    bool clip_enabled;
+} RenderStateCache;
+
+static RenderStateCache g_state_cache = { 0 };
+
+static void reset_render_state_cache(void)
+{
+    SDL_zero(g_state_cache);
+}
+
+static void cached_SetRenderDrawBlendMode(SDL_Renderer *renderer, SDL_BlendMode blendMode)
+{
+    if (!g_state_cache.has_blend_mode || g_state_cache.blend_mode != blendMode) {
+        SDL_SetRenderDrawBlendMode(renderer, blendMode);
+        g_state_cache.blend_mode = blendMode;
+        g_state_cache.has_blend_mode = true;
+    }
+}
+
+static void cached_SetRenderDrawColor(SDL_Renderer *renderer, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    if (!g_state_cache.has_draw_color ||
+        g_state_cache.r != r || g_state_cache.g != g ||
+        g_state_cache.b != b || g_state_cache.a != a) {
+        SDL_SetRenderDrawColor(renderer, r, g, b, a);
+        g_state_cache.r = r;
+        g_state_cache.g = g;
+        g_state_cache.b = b;
+        g_state_cache.a = a;
+        g_state_cache.has_draw_color = true;
+    }
+}
+
+static void cached_SetRenderClipRect(SDL_Renderer *renderer, const SDL_Rect *rect)
+{
+    if (!rect) {
+        if (g_state_cache.clip_enabled) {
+            SDL_SetRenderClipRect(renderer, NULL);
+            g_state_cache.clip_enabled = false;
+        }
+    } else {
+        if (!g_state_cache.clip_enabled ||
+            g_state_cache.clip_rect.x != rect->x || g_state_cache.clip_rect.y != rect->y ||
+            g_state_cache.clip_rect.w != rect->w || g_state_cache.clip_rect.h != rect->h) {
+            SDL_SetRenderClipRect(renderer, rect);
+            g_state_cache.clip_rect = *rect;
+            g_state_cache.clip_enabled = true;
+        }
+    }
+}
+
+#if JS_SDL_ENABLE_PROFILING
+static uint32_t g_prof_frame_count = 0;
+static Uint64 g_prof_logic_total = 0;
+static Uint64 g_prof_logic_max = 0;
+static Uint64 g_prof_js_total = 0;
+
+static Uint64 g_prof_exec_total = 0;
+static Uint64 g_prof_exec_max = 0;
+static Uint64 g_prof_present_total = 0;
+
+static Uint64 g_prof_interval_total = 0;
+static Uint64 g_prof_interval_max = 0;
+
+static uint32_t g_prof_cmd_total = 0;
+static uint32_t g_prof_buffer_grows = 0;
+static uint32_t g_prof_dropped_frames = 0;
+
+void js_prof_record_logic(Uint64 logic_ns, Uint64 js_update_ns, Uint64 serialize_ns, Uint64 wait_ns)
+{
+    (void)serialize_ns; (void)wait_ns;
+    g_prof_logic_total += logic_ns;
+    if (logic_ns > g_prof_logic_max) g_prof_logic_max = logic_ns;
+    g_prof_js_total += js_update_ns;
+}
+
+void js_prof_record_render(Uint64 exec_ns, Uint64 present_ns, uint32_t cmd_count, Uint64 interval_ns)
+{
+    g_prof_exec_total += exec_ns;
+    if (exec_ns > g_prof_exec_max) g_prof_exec_max = exec_ns;
+    g_prof_present_total += present_ns;
+    g_prof_cmd_total += cmd_count;
+
+    if (interval_ns > 0) {
+        g_prof_interval_total += interval_ns;
+        if (interval_ns > g_prof_interval_max) g_prof_interval_max = interval_ns;
+    }
+
+    g_prof_frame_count++;
+    if (g_prof_frame_count >= 180) {
+        double logic_avg_ms = (double)g_prof_logic_total / (g_prof_frame_count * 1e6);
+        double logic_max_ms = (double)g_prof_logic_max / 1e6;
+        double js_avg_ms = (double)g_prof_js_total / (g_prof_frame_count * 1e6);
+
+        double exec_avg_ms = (double)g_prof_exec_total / (g_prof_frame_count * 1e6);
+        double exec_max_ms = (double)g_prof_exec_max / 1e6;
+        double present_avg_ms = (double)g_prof_present_total / (g_prof_frame_count * 1e6);
+
+        double interval_avg_ms = (double)g_prof_interval_total / (g_prof_frame_count * 1e6);
+        double fps = interval_avg_ms > 0.0 ? 1000.0 / interval_avg_ms : 0.0;
+
+        uint32_t cmd_avg = g_prof_cmd_total / g_prof_frame_count;
+
+        SDL_Log("[PROFILER %u frames] FPS: %.1f | Logic avg/max: %.2f/%.2f ms (JS: %.2f ms) | Render exec avg/max: %.2f/%.2f ms | Present avg: %.2f ms | Cmds/frame: %u | Grows: %u | Dropped: %u",
+            g_prof_frame_count, fps, logic_avg_ms, logic_max_ms, js_avg_ms,
+            exec_avg_ms, exec_max_ms, present_avg_ms, cmd_avg,
+            g_prof_buffer_grows, g_prof_dropped_frames);
+
+        g_prof_frame_count = 0;
+        g_prof_logic_total = 0;
+        g_prof_logic_max = 0;
+        g_prof_js_total = 0;
+        g_prof_exec_total = 0;
+        g_prof_exec_max = 0;
+        g_prof_present_total = 0;
+        g_prof_interval_total = 0;
+        g_prof_interval_max = 0;
+        g_prof_cmd_total = 0;
+    }
+}
+
+void js_prof_record_buffer_grow(void)
+{
+    g_prof_buffer_grows++;
+}
+
+void js_prof_record_dropped_frame(void)
+{
+    g_prof_dropped_frames++;
+}
+#endif
+
 
 #define MAX_FONTS 64
 typedef struct FontAsset {
@@ -550,14 +707,13 @@ static void create_window_main_thread(void *userdata)
         g_window = NULL;
         return;
     }
-#if defined(SDL_PLATFORM_ANDROID)
     if (!SDL_SetRenderVSync(g_renderer, 1)) {
         SDL_LogWarn(
             SDL_LOG_CATEGORY_RENDER,
-            "Could not enable Android renderer vsync: %s",
+            "Could not enable renderer vsync: %s",
             SDL_GetError());
     }
-#endif
+
     SDL_SetWindowPosition(
         g_window,
         SDL_WINDOWPOS_CENTERED,
@@ -1616,10 +1772,12 @@ static JSValue js_clear(
     flush_draw_batch();
     g_draw_calls = 0;
     g_vertices = 0;
-    SDL_SetRenderDrawColor(g_renderer, 9, 15, 29, 255);
+    reset_render_state_cache();
+    cached_SetRenderDrawColor(g_renderer, 9, 15, 29, 255);
     SDL_RenderClear(g_renderer);
     return JS_UNDEFINED;
 }
+
 
 static bool append_texture_region(
     int id,
@@ -2148,6 +2306,7 @@ static JSValue js_popClipRect(
 
 static void free_render_frame(RenderFrame *frame)
 {
+    if (!frame) return;
     SDL_free(frame->commands);
     SDL_free(frame->floats);
     SDL_free(frame->uints);
@@ -2155,30 +2314,21 @@ static void free_render_frame(RenderFrame *frame)
     SDL_zero(*frame);
 }
 
-static bool copy_render_frame(
-    RenderFrame *frame,
-    const uint8_t *commands, size_t commands_len,
-    const uint8_t *floats, size_t floats_len,
-    const uint8_t *uints, size_t uints_len,
-    const uint8_t *shorts, size_t shorts_len)
+static bool ensure_capacity(void **data, size_t *capacity, size_t required, size_t elem_size)
 {
-    frame->commands = SDL_malloc(commands_len);
-    frame->floats = SDL_malloc(floats_len);
-    frame->uints = SDL_malloc(uints_len);
-    frame->shorts = shorts_len ? SDL_malloc(shorts_len) : NULL;
-    if (!frame->commands || !frame->floats || !frame->uints ||
-        (shorts_len && !frame->shorts)) {
-        free_render_frame(frame);
-        return false;
+    if (*capacity >= required) return true;
+    size_t new_cap = *capacity == 0 ? 1024 * elem_size : *capacity * 2;
+    while (new_cap < required) {
+        if (new_cap > SIZE_MAX / 2) return false;
+        new_cap *= 2;
     }
-    SDL_memcpy(frame->commands, commands, commands_len);
-    SDL_memcpy(frame->floats, floats, floats_len);
-    SDL_memcpy(frame->uints, uints, uints_len);
-    if (shorts_len) SDL_memcpy(frame->shorts, shorts, shorts_len);
-    frame->commands_len = commands_len;
-    frame->floats_len = floats_len;
-    frame->uints_len = uints_len;
-    frame->shorts_len = shorts_len;
+    void *ptr = SDL_realloc(*data, new_cap);
+    if (!ptr) return false;
+    *data = ptr;
+    *capacity = new_cap;
+#if JS_SDL_ENABLE_PROFILING
+    js_prof_record_buffer_grow();
+#endif
     return true;
 }
 
@@ -2241,26 +2391,69 @@ static JSValue js_submitCommandBuffer(
 
     if (g_render_queue_enabled && !g_executing_render_frame &&
         ptr_cmds && ptr_floats && ptr_uints) {
-        RenderFrame frame = { 0 };
-        if (copy_render_frame(
-                &frame,
-                ptr_cmds + cmds_off, cmds_len,
-                ptr_floats + floats_off, floats_len,
-                ptr_uints + uints_off, uints_len,
-                ptr_shorts ? ptr_shorts + shorts_off : NULL,
-                ptr_shorts ? shorts_len : 0)) {
-            SDL_LockMutex(g_render_queue_mutex);
-            if (g_render_queue_enabled) {
-                /* Keep latency bounded: a newer completed frame supersedes one
-                   the renderer has not started yet. */
-                free_render_frame(&g_render_frame);
-                g_render_frame = frame;
-                SDL_SignalCondition(g_render_queue_ready);
-            } else {
-                free_render_frame(&frame);
-            }
+
+        SDL_LockMutex(g_render_queue_mutex);
+        if (!g_render_queue_enabled) {
             SDL_UnlockMutex(g_render_queue_mutex);
+            goto cleanup_js_values;
         }
+
+        int target_idx = -1;
+        for (int i = 0; i < RENDER_BUFFER_COUNT; i++) {
+            if (g_render_buffers[i].state == RENDER_BUFFER_FREE) {
+                target_idx = i;
+                break;
+            }
+        }
+        if (target_idx < 0) {
+            for (int i = 0; i < RENDER_BUFFER_COUNT; i++) {
+                if (g_render_buffers[i].state == RENDER_BUFFER_READY) {
+                    target_idx = i;
+#if JS_SDL_ENABLE_PROFILING
+                    js_prof_record_dropped_frame();
+#endif
+                    break;
+                }
+            }
+        }
+
+        if (target_idx < 0) {
+            SDL_UnlockMutex(g_render_queue_mutex);
+            goto cleanup_js_values;
+        }
+
+        RenderFrame *buf = &g_render_buffers[target_idx];
+        buf->state = RENDER_BUFFER_WRITING;
+        SDL_UnlockMutex(g_render_queue_mutex);
+
+        if (!ensure_capacity((void **)&buf->commands, &buf->commands_cap, cmds_len, 1) ||
+            !ensure_capacity((void **)&buf->floats, &buf->floats_cap, floats_len, 1) ||
+            !ensure_capacity((void **)&buf->uints, &buf->uints_cap, uints_len, 1) ||
+            (shorts_len && !ensure_capacity((void **)&buf->shorts, &buf->shorts_cap, shorts_len, 1))) {
+            SDL_LockMutex(g_render_queue_mutex);
+            buf->state = RENDER_BUFFER_FREE;
+            SDL_UnlockMutex(g_render_queue_mutex);
+            goto cleanup_js_values;
+        }
+
+        SDL_memcpy(buf->commands, ptr_cmds + cmds_off, cmds_len);
+        SDL_memcpy(buf->floats, ptr_floats + floats_off, floats_len);
+        SDL_memcpy(buf->uints, ptr_uints + uints_off, uints_len);
+        if (shorts_len && buf->shorts) {
+            SDL_memcpy(buf->shorts, ptr_shorts + shorts_off, shorts_len);
+        }
+        buf->commands_len = cmds_len;
+        buf->floats_len = floats_len;
+        buf->uints_len = uints_len;
+        buf->shorts_len = shorts_len;
+        buf->timestamp_ns = SDL_GetTicksNS();
+
+        SDL_LockMutex(g_render_queue_mutex);
+        buf->state = RENDER_BUFFER_READY;
+        SDL_SignalCondition(g_render_queue_ready);
+        SDL_UnlockMutex(g_render_queue_mutex);
+
+    cleanup_js_values:
         JS_FreeValue(ctx, buf_cmds);
         JS_FreeValue(ctx, buf_floats);
         JS_FreeValue(ctx, buf_uints);
@@ -2416,7 +2609,7 @@ static JSValue js_submitCommandBuffer(
                 double b = (c >> 8) & 0xFF;
                 double a = c & 0xFF;
 
-                SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+                cached_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
                 SDL_FColor color = {
                     (float)(r / 255.0), (float)(g / 255.0), (float)(b / 255.0), (float)(a / 255.0)
                 };
@@ -2441,8 +2634,8 @@ static JSValue js_submitCommandBuffer(
                 double a = c & 0xFF;
 
                 flush_draw_batch();
-                SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-                SDL_SetRenderDrawColor(g_renderer, (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a);
+                cached_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+                cached_SetRenderDrawColor(g_renderer, (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a);
                 SDL_RenderLine(g_renderer, (float)x1, (float)y1, (float)x2, (float)y2);
                 g_draw_calls++;
             } else if (op == 6) { // CMD_PUSH_CLIP
@@ -2462,11 +2655,11 @@ static JSValue js_submitCommandBuffer(
                     }
                 }
                 g_clip_stack[g_clip_depth++] = clip;
-                SDL_SetRenderClipRect(g_renderer, &clip);
+                cached_SetRenderClipRect(g_renderer, &clip);
             } else if (op == 7) { // CMD_POP_CLIP
                 flush_draw_batch();
                 if (g_clip_depth > 0) g_clip_depth--;
-                SDL_SetRenderClipRect(g_renderer, g_clip_depth > 0 ? &g_clip_stack[g_clip_depth - 1] : NULL);
+                cached_SetRenderClipRect(g_renderer, g_clip_depth > 0 ? &g_clip_stack[g_clip_depth - 1] : NULL);
             }
         }
     }
@@ -2485,6 +2678,7 @@ static JSValue js_submitCommandBuffer(
 
     return JS_UNDEFINED;
 }
+
 
 /* --- Binding: present() --- */
 static JSValue js_present(
@@ -3086,7 +3280,9 @@ void js_disable_render_queue(void)
     SDL_LockMutex(g_render_queue_mutex);
     g_render_queue_enabled = false;
     SDL_BroadcastCondition(g_render_queue_ready);
-    free_render_frame(&g_render_frame);
+    for (int i = 0; i < RENDER_BUFFER_COUNT; i++) {
+        g_render_buffers[i].state = RENDER_BUFFER_FREE;
+    }
     SDL_UnlockMutex(g_render_queue_mutex);
 }
 
@@ -3098,28 +3294,84 @@ void js_destroy_render_queue(void)
     SDL_DestroyMutex(g_render_queue_mutex);
     g_render_queue_ready = NULL;
     g_render_queue_mutex = NULL;
+    for (int i = 0; i < RENDER_BUFFER_COUNT; i++) {
+        free_render_frame(&g_render_buffers[i]);
+    }
 }
 
 bool js_render_pending_frame(void)
 {
     if (!g_render_queue_enabled || !g_render_queue_mutex) return false;
 
-    RenderFrame frame = { 0 };
     SDL_LockMutex(g_render_queue_mutex);
-    if (g_render_frame.commands) {
-        frame = g_render_frame;
-        SDL_zero(g_render_frame);
-        SDL_SignalCondition(g_render_queue_ready);
-    }
-    SDL_UnlockMutex(g_render_queue_mutex);
-    if (!frame.commands) return false;
+    int newest_idx = -1;
+    Uint64 newest_time = 0;
 
-    g_executing_render_frame = &frame;
+    for (int i = 0; i < RENDER_BUFFER_COUNT; i++) {
+        if (g_render_buffers[i].state == RENDER_BUFFER_READY) {
+            if (newest_idx < 0 || g_render_buffers[i].timestamp_ns > newest_time) {
+                if (newest_idx >= 0) {
+                    g_render_buffers[newest_idx].state = RENDER_BUFFER_FREE;
+#if JS_SDL_ENABLE_PROFILING
+                    js_prof_record_dropped_frame();
+#endif
+                }
+                newest_idx = i;
+                newest_time = g_render_buffers[i].timestamp_ns;
+            } else {
+                g_render_buffers[i].state = RENDER_BUFFER_FREE;
+#if JS_SDL_ENABLE_PROFILING
+                js_prof_record_dropped_frame();
+#endif
+            }
+        }
+    }
+
+    if (newest_idx < 0) {
+        SDL_UnlockMutex(g_render_queue_mutex);
+        return false;
+    }
+
+    RenderFrame *frame = &g_render_buffers[newest_idx];
+    frame->state = RENDER_BUFFER_READING;
+    SDL_UnlockMutex(g_render_queue_mutex);
+
+#if JS_SDL_ENABLE_PROFILING
+    static Uint64 last_render_ticks = 0;
+    Uint64 now_ticks = SDL_GetTicksNS();
+    Uint64 interval_ns = last_render_ticks > 0 ? now_ticks - last_render_ticks : 0;
+    last_render_ticks = now_ticks;
+
+    Uint64 exec_start_ns = SDL_GetTicksNS();
+#endif
+
+    g_executing_render_frame = frame;
     js_clear(NULL, JS_UNDEFINED, 0, NULL);
     js_submitCommandBuffer(NULL, JS_UNDEFINED, 0, NULL);
+
+#if JS_SDL_ENABLE_PROFILING
+    Uint64 exec_end_ns = SDL_GetTicksNS();
+    Uint64 present_start_ns = exec_end_ns;
+#endif
+
     js_present(NULL, JS_UNDEFINED, 0, NULL);
+
+#if JS_SDL_ENABLE_PROFILING
+    Uint64 present_end_ns = SDL_GetTicksNS();
+    uint32_t cmd_count = (uint32_t)(frame->commands_len / sizeof(int32_t));
+    js_prof_record_render(
+        exec_end_ns - exec_start_ns,
+        present_end_ns - present_start_ns,
+        cmd_count,
+        interval_ns);
+#endif
+
     g_executing_render_frame = NULL;
-    free_render_frame(&frame);
+
+    SDL_LockMutex(g_render_queue_mutex);
+    frame->state = RENDER_BUFFER_FREE;
+    SDL_UnlockMutex(g_render_queue_mutex);
+
     return true;
 }
 
@@ -3148,18 +3400,25 @@ void js_call_keyDown(JSContext *ctx, const char *key)
     { js_call_string(ctx, g_keyDown, key); }
 void js_call_keyUp(JSContext *ctx, const char *key)
     { js_call_string(ctx, g_keyUp, key); }
-void js_call_pause(JSContext *ctx) { js_call_void(ctx, g_onPause); }
+void js_call_pause(JSContext *ctx) {
+    js_call_void(ctx, g_onPause);
+    if (ctx) JS_RunGC(JS_GetRuntime(ctx));
+}
 void js_call_resume(JSContext *ctx) { js_call_void(ctx, g_onResume); }
 void js_call_background(JSContext *ctx) { js_call_void(ctx, g_onBackground); }
 void js_call_foreground(JSContext *ctx) { js_call_void(ctx, g_onForeground); }
 void js_call_interruption(JSContext *ctx, int active)
     { js_call_bool(ctx, g_onInterruption, active); }
-void js_call_low_memory(JSContext *ctx) { js_call_void(ctx, g_onLowMemory); }
+void js_call_low_memory(JSContext *ctx) {
+    js_call_void(ctx, g_onLowMemory);
+    if (ctx) JS_RunGC(JS_GetRuntime(ctx));
+}
 void js_call_orientation_change(
     JSContext *ctx, SDL_DisplayOrientation orientation, int width, int height)
     { js_call_orientation(
         ctx, g_onOrientationChange, orientation, width, height); }
 void js_call_terminate(JSContext *ctx) { js_call_void(ctx, g_onTerminate); }
+
 
 void js_get_window_size(int *width, int *height)
 {

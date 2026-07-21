@@ -39,3 +39,25 @@ void js_get_window_size(int *width, int *height);
 int  js_get_win_w(void);
 int  js_get_win_h(void);
 void js_convert_event_to_render_coordinates(SDL_Event *event);
+
+typedef struct FrameMetrics {
+    Uint64 logic_ns;
+    Uint64 js_update_ns;
+    Uint64 serialize_ns;
+    Uint64 wait_render_buffer_ns;
+    Uint64 render_execute_ns;
+    Uint64 present_ns;
+    Uint64 frame_interval_ns;
+
+    uint32_t command_count;
+    uint32_t buffer_grow_count;
+    uint32_t dropped_render_frames;
+} FrameMetrics;
+
+#if JS_SDL_ENABLE_PROFILING
+void js_prof_record_logic(Uint64 logic_ns, Uint64 js_update_ns, Uint64 serialize_ns, Uint64 wait_ns);
+void js_prof_record_render(Uint64 exec_ns, Uint64 present_ns, uint32_t cmd_count, Uint64 interval_ns);
+void js_prof_record_buffer_grow(void);
+void js_prof_record_dropped_frame(void);
+#endif
+

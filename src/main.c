@@ -294,8 +294,8 @@ static int run_logic_loop(void *userdata)
     }
 
     const Uint64 TARGET_FRAME_NS = 1000000000ULL / 60ULL;
-    Uint64 frame_start_ns = SDL_GetTicksNS();
-    Uint64 previous_ticks = frame_start_ns;
+    Uint64 next_logic_tick_ns = 0;
+    Uint64 previous_ticks = SDL_GetTicksNS();
 
     for (;;) {
         SDL_LockMutex(state->event_mutex);
@@ -303,29 +303,46 @@ static int run_logic_loop(void *userdata)
         SDL_UnlockMutex(state->event_mutex);
         if (!running) break;
 
-        frame_start_ns = SDL_GetTicksNS();
+        Uint64 now_ns = SDL_GetTicksNS();
+        if (next_logic_tick_ns == 0) {
+            next_logic_tick_ns = now_ns;
+        }
+        next_logic_tick_ns += TARGET_FRAME_NS;
+
         float delta_time = state->reset_frame_clock
             ? (1.0f / 60.0f)
-            : (float)(frame_start_ns - previous_ticks) / 1000000000.0f;
-        previous_ticks = frame_start_ns;
+            : (float)(now_ns - previous_ticks) / 1000000000.0f;
+        previous_ticks = now_ns;
         state->reset_frame_clock = false;
 
         process_queued_events(state);
 
+        Uint64 update_start_ns = SDL_GetTicksNS();
         js_execute_pending_job(state->runtime);
         if (state->active) {
             js_set_frame_timing(delta_time);
             js_call_onUpdate_dt(state->context, delta_time);
             js_call_onRender(state->context);
         }
+        Uint64 update_end_ns = SDL_GetTicksNS();
+        Uint64 js_update_ns = update_end_ns - update_start_ns;
+        Uint64 logic_ns = update_end_ns - now_ns;
 
-        Uint64 frame_elapsed_ns = SDL_GetTicksNS() - frame_start_ns;
-        if (frame_elapsed_ns < TARGET_FRAME_NS) {
-            SDL_DelayNS(TARGET_FRAME_NS - frame_elapsed_ns);
+#if JS_SDL_ENABLE_PROFILING
+        js_prof_record_logic(logic_ns, js_update_ns, 0, 0);
+#endif
+
+        now_ns = SDL_GetTicksNS();
+        if (now_ns < next_logic_tick_ns) {
+            SDL_DelayNS(next_logic_tick_ns - now_ns);
         } else {
-            SDL_Delay(1);
+            Uint64 lag_ns = now_ns - next_logic_tick_ns;
+            if (lag_ns > TARGET_FRAME_NS * 4) {
+                next_logic_tick_ns = now_ns;
+            }
         }
     }
+
 
     js_disable_render_queue();
     js_destroy_render_queue();
@@ -514,10 +531,13 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 {
     (void)appstate;
     process_main_thread_jobs();
-    js_render_pending_frame();
-    SDL_Delay(1);
+    bool rendered = js_render_pending_frame();
+    if (!rendered) {
+        SDL_DelayNS(500000);
+    }
     return SDL_APP_CONTINUE;
 }
+
 
 void SDL_AppQuit(void *appstate, SDL_AppResult result)
 {
