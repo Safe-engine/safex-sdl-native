@@ -5,6 +5,7 @@
 
 typedef void (*js_main_thread_fn)(void *arg);
 void js_run_on_main_thread(js_main_thread_fn fn, void *arg);
+bool js_is_main_thread(void);
 
 int  js_init_sdl3(JSContext *ctx);
 void js_sdl3_shutdown(JSContext *ctx);

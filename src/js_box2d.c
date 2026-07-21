@@ -34,11 +34,53 @@ typedef struct JsDebugDrawContext {
 static JsBox2DWorld g_worlds[MAX_WORLDS];
 static JsBox2DBody g_bodies[MAX_BODIES];
 
+static JSAtom g_box2d_atom_type = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_x = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_y = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_x1 = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_y1 = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_x2 = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_y2 = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_radius = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_points = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_fill = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_color = JS_ATOM_NULL;
+static JSAtom g_box2d_atom_size = JS_ATOM_NULL;
+
+static JSValue g_box2d_str_line = JS_UNDEFINED;
+static JSValue g_box2d_str_circle = JS_UNDEFINED;
+static JSValue g_box2d_str_polygon = JS_UNDEFINED;
+static JSValue g_box2d_str_point = JS_UNDEFINED;
+
+static void ensure_box2d_atoms(JSContext *ctx)
+{
+    if (g_box2d_atom_type == JS_ATOM_NULL && ctx) {
+        g_box2d_atom_type = JS_NewAtom(ctx, "type");
+        g_box2d_atom_x = JS_NewAtom(ctx, "x");
+        g_box2d_atom_y = JS_NewAtom(ctx, "y");
+        g_box2d_atom_x1 = JS_NewAtom(ctx, "x1");
+        g_box2d_atom_y1 = JS_NewAtom(ctx, "y1");
+        g_box2d_atom_x2 = JS_NewAtom(ctx, "x2");
+        g_box2d_atom_y2 = JS_NewAtom(ctx, "y2");
+        g_box2d_atom_radius = JS_NewAtom(ctx, "radius");
+        g_box2d_atom_points = JS_NewAtom(ctx, "points");
+        g_box2d_atom_fill = JS_NewAtom(ctx, "fill");
+        g_box2d_atom_color = JS_NewAtom(ctx, "color");
+        g_box2d_atom_size = JS_NewAtom(ctx, "size");
+
+        g_box2d_str_line = JS_NewString(ctx, "line");
+        g_box2d_str_circle = JS_NewString(ctx, "circle");
+        g_box2d_str_polygon = JS_NewString(ctx, "polygon");
+        g_box2d_str_point = JS_NewString(ctx, "point");
+    }
+}
+
 static b2Vec2 js_vec2(JSContext *ctx, JSValueConst value)
 {
+    ensure_box2d_atoms(ctx);
     b2Vec2 result = {0.0f, 0.0f};
-    JSValue x = JS_GetPropertyStr(ctx, value, "x");
-    JSValue y = JS_GetPropertyStr(ctx, value, "y");
+    JSValue x = JS_GetProperty(ctx, value, g_box2d_atom_x);
+    JSValue y = JS_GetProperty(ctx, value, g_box2d_atom_y);
     double dx = 0.0;
     double dy = 0.0;
     JS_ToFloat64(ctx, &dx, x);
@@ -64,15 +106,17 @@ static double js_angle(b2Rot rot)
 
 static JSValue js_debug_point(JSContext *ctx, double x, double y, float pixels_per_meter)
 {
+    ensure_box2d_atoms(ctx);
     JSValue point = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, point, "x", JS_NewFloat64(ctx, x * pixels_per_meter));
-    JS_SetPropertyStr(ctx, point, "y", JS_NewFloat64(ctx, y * pixels_per_meter));
+    JS_SetProperty(ctx, point, g_box2d_atom_x, JS_NewFloat64(ctx, x * pixels_per_meter));
+    JS_SetProperty(ctx, point, g_box2d_atom_y, JS_NewFloat64(ctx, y * pixels_per_meter));
     return point;
 }
 
 static void js_debug_set_color(JSContext *ctx, JSValue object, b2HexColor color)
 {
-    JS_SetPropertyStr(ctx, object, "color", JS_NewInt32(ctx, (int)color));
+    ensure_box2d_atoms(ctx);
+    JS_SetProperty(ctx, object, g_box2d_atom_color, JS_NewInt32(ctx, (int)color));
 }
 
 static void js_debug_append(JsDebugDrawContext *context, JSValue object)
@@ -84,12 +128,13 @@ static void js_debug_append_line(
     JsDebugDrawContext *context, b2Vec2 p1, b2Vec2 p2, b2HexColor color)
 {
     JSContext *ctx = context->ctx;
+    ensure_box2d_atoms(ctx);
     JSValue object = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, object, "type", JS_NewString(ctx, "line"));
-    JS_SetPropertyStr(ctx, object, "x1", JS_NewFloat64(ctx, p1.x * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "y1", JS_NewFloat64(ctx, p1.y * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "x2", JS_NewFloat64(ctx, p2.x * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "y2", JS_NewFloat64(ctx, p2.y * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_type, JS_DupValue(ctx, g_box2d_str_line));
+    JS_SetProperty(ctx, object, g_box2d_atom_x1, JS_NewFloat64(ctx, p1.x * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_y1, JS_NewFloat64(ctx, p1.y * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_x2, JS_NewFloat64(ctx, p2.x * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_y2, JS_NewFloat64(ctx, p2.y * context->pixels_per_meter));
     js_debug_set_color(ctx, object, color);
     js_debug_append(context, object);
 }
@@ -98,12 +143,13 @@ static void js_debug_append_circle(
     JsDebugDrawContext *context, b2Vec2 center, float radius, b2HexColor color, bool fill)
 {
     JSContext *ctx = context->ctx;
+    ensure_box2d_atoms(ctx);
     JSValue object = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, object, "type", JS_NewString(ctx, "circle"));
-    JS_SetPropertyStr(ctx, object, "x", JS_NewFloat64(ctx, center.x * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "y", JS_NewFloat64(ctx, center.y * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "radius", JS_NewFloat64(ctx, radius * context->pixels_per_meter));
-    if (fill) JS_SetPropertyStr(ctx, object, "fill", JS_NewBool(ctx, true));
+    JS_SetProperty(ctx, object, g_box2d_atom_type, JS_DupValue(ctx, g_box2d_str_circle));
+    JS_SetProperty(ctx, object, g_box2d_atom_x, JS_NewFloat64(ctx, center.x * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_y, JS_NewFloat64(ctx, center.y * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_radius, JS_NewFloat64(ctx, radius * context->pixels_per_meter));
+    if (fill) JS_SetProperty(ctx, object, g_box2d_atom_fill, JS_NewBool(ctx, true));
     js_debug_set_color(ctx, object, color);
     js_debug_append(context, object);
 }
@@ -117,9 +163,10 @@ static void js_debug_append_polygon(
     bool fill)
 {
     JSContext *ctx = context->ctx;
+    ensure_box2d_atoms(ctx);
     JSValue object = JS_NewObject(ctx);
     JSValue points = JS_NewArray(ctx);
-    JS_SetPropertyStr(ctx, object, "type", JS_NewString(ctx, "polygon"));
+    JS_SetProperty(ctx, object, g_box2d_atom_type, JS_DupValue(ctx, g_box2d_str_polygon));
     for (int i = 0; i < vertex_count; i++) {
         b2Vec2 p = b2TransformPoint(transform, vertices[i]);
         JS_SetPropertyUint32(
@@ -128,8 +175,8 @@ static void js_debug_append_polygon(
             (uint32_t)i,
             js_debug_point(ctx, p.x, p.y, context->pixels_per_meter));
     }
-    JS_SetPropertyStr(ctx, object, "points", points);
-    if (fill) JS_SetPropertyStr(ctx, object, "fill", JS_NewBool(ctx, true));
+    JS_SetProperty(ctx, object, g_box2d_atom_points, points);
+    if (fill) JS_SetProperty(ctx, object, g_box2d_atom_fill, JS_NewBool(ctx, true));
     js_debug_set_color(ctx, object, color);
     js_debug_append(context, object);
 }
@@ -291,11 +338,12 @@ static void js_draw_point(b2Pos p, float size, b2HexColor color, void *data)
 {
     JSContext *ctx = ((JsDebugDrawContext *)data)->ctx;
     JsDebugDrawContext *context = data;
+    ensure_box2d_atoms(ctx);
     JSValue object = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, object, "type", JS_NewString(ctx, "point"));
-    JS_SetPropertyStr(ctx, object, "x", JS_NewFloat64(ctx, p.x * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "y", JS_NewFloat64(ctx, p.y * context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "size", JS_NewFloat64(ctx, size));
+    JS_SetProperty(ctx, object, g_box2d_atom_type, JS_DupValue(ctx, g_box2d_str_point));
+    JS_SetProperty(ctx, object, g_box2d_atom_x, JS_NewFloat64(ctx, p.x * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_y, JS_NewFloat64(ctx, p.y * context->pixels_per_meter));
+    JS_SetProperty(ctx, object, g_box2d_atom_size, JS_NewFloat64(ctx, size));
     js_debug_set_color(ctx, object, color);
     js_debug_append(context, object);
 }
@@ -304,9 +352,10 @@ static void js_draw_bounds(b2AABB aabb, b2HexColor color, void *data)
 {
     JsDebugDrawContext *context = data;
     JSContext *ctx = context->ctx;
+    ensure_box2d_atoms(ctx);
     JSValue object = JS_NewObject(ctx);
     JSValue points = JS_NewArray(ctx);
-    JS_SetPropertyStr(ctx, object, "type", JS_NewString(ctx, "polygon"));
+    JS_SetProperty(ctx, object, g_box2d_atom_type, JS_DupValue(ctx, g_box2d_str_polygon));
     JS_SetPropertyUint32(
         ctx, points, 0,
         js_debug_point(ctx, aabb.lowerBound.x, aabb.lowerBound.y, context->pixels_per_meter));
@@ -319,7 +368,7 @@ static void js_draw_bounds(b2AABB aabb, b2HexColor color, void *data)
     JS_SetPropertyUint32(
         ctx, points, 3,
         js_debug_point(ctx, aabb.lowerBound.x, aabb.upperBound.y, context->pixels_per_meter));
-    JS_SetPropertyStr(ctx, object, "points", points);
+    JS_SetProperty(ctx, object, g_box2d_atom_points, points);
     js_debug_set_color(ctx, object, color);
     js_debug_append(context, object);
 }

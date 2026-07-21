@@ -20,6 +20,7 @@ typedef struct AppState {
     bool logic_running;
     bool logic_done;
     SDL_Thread *logic_thread;
+    SDL_Condition *logic_cond;
 
     /* Startup synchronization */
     SDL_Mutex *init_mutex;
@@ -289,11 +290,13 @@ static int run_logic_loop(void *userdata)
         }
         SDL_LockMutex(state->event_mutex);
         state->logic_done = true;
+        if (state->logic_cond) SDL_SignalCondition(state->logic_cond);
         SDL_UnlockMutex(state->event_mutex);
         return -1;
     }
 
     const Uint64 TARGET_FRAME_NS = 1000000000ULL / 60ULL;
+    const float MAX_DELTA_TIME = 0.1f; /* Cap delta_time to 100ms (10 FPS min) to avoid physics tunneling & spikes */
     Uint64 next_logic_tick_ns = 0;
     Uint64 previous_ticks = SDL_GetTicksNS();
 
@@ -304,16 +307,22 @@ static int run_logic_loop(void *userdata)
         if (!running) break;
 
         Uint64 now_ns = SDL_GetTicksNS();
-        if (next_logic_tick_ns == 0) {
+        if (next_logic_tick_ns == 0 || state->reset_frame_clock) {
             next_logic_tick_ns = now_ns;
         }
-        next_logic_tick_ns += TARGET_FRAME_NS;
 
-        float delta_time = state->reset_frame_clock
-            ? (1.0f / 60.0f)
-            : (float)(now_ns - previous_ticks) / 1000000000.0f;
+        float delta_time;
+        if (state->reset_frame_clock) {
+            delta_time = 1.0f / 60.0f;
+            state->reset_frame_clock = false;
+        } else {
+            Uint64 elapsed_ns = now_ns - previous_ticks;
+            delta_time = (float)elapsed_ns / 1000000000.0f;
+            if (delta_time > MAX_DELTA_TIME) {
+                delta_time = MAX_DELTA_TIME;
+            }
+        }
         previous_ticks = now_ns;
-        state->reset_frame_clock = false;
 
         process_queued_events(state);
 
@@ -333,13 +342,13 @@ static int run_logic_loop(void *userdata)
 #endif
 
         now_ns = SDL_GetTicksNS();
+        next_logic_tick_ns += TARGET_FRAME_NS;
+
         if (now_ns < next_logic_tick_ns) {
             SDL_DelayNS(next_logic_tick_ns - now_ns);
         } else {
-            Uint64 lag_ns = now_ns - next_logic_tick_ns;
-            if (lag_ns > TARGET_FRAME_NS * 4) {
-                next_logic_tick_ns = now_ns;
-            }
+            /* Reset next_logic_tick_ns to current time if behind to prevent catch-up spiral of death */
+            next_logic_tick_ns = now_ns;
         }
     }
 
@@ -352,6 +361,7 @@ static int run_logic_loop(void *userdata)
 
     SDL_LockMutex(state->event_mutex);
     state->logic_done = true;
+    if (state->logic_cond) SDL_SignalCondition(state->logic_cond);
     SDL_UnlockMutex(state->event_mutex);
 
     return 0;
@@ -360,16 +370,20 @@ static int run_logic_loop(void *userdata)
 typedef struct MainThreadJob {
     js_main_thread_fn fn;
     void *arg;
-    SDL_Mutex *mutex;
-    SDL_Condition *cond;
     bool done;
     struct MainThreadJob *next;
 } MainThreadJob;
 
 static SDL_Mutex *g_main_job_mutex = NULL;
+static SDL_Condition *g_main_job_cond = NULL;
 static MainThreadJob *g_main_job_head = NULL;
 static MainThreadJob *g_main_job_tail = NULL;
 static SDL_ThreadID g_main_thread_id = 0;
+
+bool js_is_main_thread(void)
+{
+    return g_main_thread_id != 0 && SDL_GetCurrentThreadID() == g_main_thread_id;
+}
 
 void js_run_on_main_thread(js_main_thread_fn fn, void *arg)
 {
@@ -383,19 +397,15 @@ void js_run_on_main_thread(js_main_thread_fn fn, void *arg)
     MainThreadJob job;
     job.fn = fn;
     job.arg = arg;
-    job.mutex = SDL_CreateMutex();
-    job.cond = SDL_CreateCondition();
     job.done = false;
     job.next = NULL;
 
-    if (!job.mutex || !job.cond) {
+    if (!g_main_job_mutex || !g_main_job_cond) {
         fn(arg);
-        if (job.mutex) SDL_DestroyMutex(job.mutex);
-        if (job.cond) SDL_DestroyCondition(job.cond);
         return;
     }
 
-    if (g_main_job_mutex) SDL_LockMutex(g_main_job_mutex);
+    SDL_LockMutex(g_main_job_mutex);
     if (!g_main_job_head) {
         g_main_job_head = &job;
         g_main_job_tail = &job;
@@ -403,16 +413,11 @@ void js_run_on_main_thread(js_main_thread_fn fn, void *arg)
         g_main_job_tail->next = &job;
         g_main_job_tail = &job;
     }
-    if (g_main_job_mutex) SDL_UnlockMutex(g_main_job_mutex);
 
-    SDL_LockMutex(job.mutex);
     while (!job.done) {
-        SDL_WaitCondition(job.cond, job.mutex);
+        SDL_WaitCondition(g_main_job_cond, g_main_job_mutex);
     }
-    SDL_UnlockMutex(job.mutex);
-
-    SDL_DestroyCondition(job.cond);
-    SDL_DestroyMutex(job.mutex);
+    SDL_UnlockMutex(g_main_job_mutex);
 }
 
 static void process_main_thread_jobs(void)
@@ -423,19 +428,18 @@ static void process_main_thread_jobs(void)
     MainThreadJob *jobs = g_main_job_head;
     g_main_job_head = NULL;
     g_main_job_tail = NULL;
-    SDL_UnlockMutex(g_main_job_mutex);
 
     while (jobs) {
         MainThreadJob *job = jobs;
         jobs = jobs->next;
 
         job->fn(job->arg);
-
-        SDL_LockMutex(job->mutex);
         job->done = true;
-        SDL_SignalCondition(job->cond);
-        SDL_UnlockMutex(job->mutex);
     }
+    if (g_main_job_cond) {
+        SDL_BroadcastCondition(g_main_job_cond);
+    }
+    SDL_UnlockMutex(g_main_job_mutex);
 }
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
@@ -446,6 +450,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     g_main_thread_id = SDL_GetCurrentThreadID();
     if (!g_main_job_mutex) {
         g_main_job_mutex = SDL_CreateMutex();
+    }
+    if (!g_main_job_cond) {
+        g_main_job_cond = SDL_CreateCondition();
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
@@ -466,13 +473,15 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
     state->init_mutex = SDL_CreateMutex();
     state->init_cond = SDL_CreateCondition();
     state->event_mutex = SDL_CreateMutex();
+    state->logic_cond = SDL_CreateCondition();
     state->logic_running = true;
 
-    if (!state->init_mutex || !state->init_cond || !state->event_mutex) {
+    if (!state->init_mutex || !state->init_cond || !state->event_mutex || !state->logic_cond) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not create mutexes/conditions");
         if (state->init_mutex) SDL_DestroyMutex(state->init_mutex);
         if (state->init_cond) SDL_DestroyCondition(state->init_cond);
         if (state->event_mutex) SDL_DestroyMutex(state->event_mutex);
+        if (state->logic_cond) SDL_DestroyCondition(state->logic_cond);
         SDL_free(state);
         SDL_Quit();
         return SDL_APP_FAILURE;
@@ -484,6 +493,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         SDL_DestroyMutex(state->init_mutex);
         SDL_DestroyCondition(state->init_cond);
         SDL_DestroyMutex(state->event_mutex);
+        SDL_DestroyCondition(state->logic_cond);
         SDL_free(state);
         SDL_Quit();
         return SDL_APP_FAILURE;
@@ -491,9 +501,9 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
 
     SDL_LockMutex(state->init_mutex);
     while (!state->init_done) {
+        SDL_WaitConditionTimeout(state->init_cond, state->init_mutex, 2);
         SDL_UnlockMutex(state->init_mutex);
         process_main_thread_jobs();
-        SDL_Delay(1);
         SDL_LockMutex(state->init_mutex);
     }
     bool success = state->init_success;
@@ -504,6 +514,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char *argv[])
         SDL_DestroyMutex(state->init_mutex);
         SDL_DestroyCondition(state->init_cond);
         SDL_DestroyMutex(state->event_mutex);
+        SDL_DestroyCondition(state->logic_cond);
         SDL_free(state);
         SDL_Quit();
         return SDL_APP_FAILURE;
@@ -533,7 +544,8 @@ SDL_AppResult SDL_AppIterate(void *appstate)
     process_main_thread_jobs();
     bool rendered = js_render_pending_frame();
     if (!rendered) {
-        SDL_DelayNS(500000);
+        /* Yield for 1ms when no frame is ready to avoid 100% CPU busy-spin on main thread */
+        SDL_DelayNS(1000000ULL);
     }
     return SDL_APP_CONTINUE;
 }
@@ -547,18 +559,20 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     if (state) {
         SDL_LockMutex(state->event_mutex);
         state->logic_running = false;
-        SDL_UnlockMutex(state->event_mutex);
-
-        for (;;) {
-            bool done;
-            SDL_LockMutex(state->event_mutex);
-            done = state->logic_done;
+        while (!state->logic_done) {
+            if (state->logic_cond) {
+                SDL_WaitConditionTimeout(state->logic_cond, state->event_mutex, 2);
+            } else {
+                SDL_UnlockMutex(state->event_mutex);
+                SDL_Delay(1);
+                SDL_LockMutex(state->event_mutex);
+                continue;
+            }
             SDL_UnlockMutex(state->event_mutex);
-            if (done) break;
-
             process_main_thread_jobs();
-            SDL_Delay(1);
+            SDL_LockMutex(state->event_mutex);
         }
+        SDL_UnlockMutex(state->event_mutex);
 
         SDL_WaitThread(state->logic_thread, NULL);
 
@@ -577,9 +591,14 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         SDL_DestroyMutex(state->init_mutex);
         SDL_DestroyCondition(state->init_cond);
         SDL_DestroyMutex(state->event_mutex);
+        if (state->logic_cond) SDL_DestroyCondition(state->logic_cond);
         SDL_free(state);
     }
 
+    if (g_main_job_cond) {
+        SDL_DestroyCondition(g_main_job_cond);
+        g_main_job_cond = NULL;
+    }
     if (g_main_job_mutex) {
         SDL_DestroyMutex(g_main_job_mutex);
         g_main_job_mutex = NULL;
