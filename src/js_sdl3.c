@@ -1444,7 +1444,7 @@ static bool reserve_input_mesh(int vertices, int indices)
 
 static void flush_draw_batch(void)
 {
-    if (!g_batch_texture || g_batch_vertex_count == 0) return;
+    if (g_batch_vertex_count == 0) return;
     SDL_RenderGeometry(
         g_renderer, g_batch_texture, g_mesh_vertices, g_batch_vertex_count,
         g_mesh_indices, g_batch_index_count);
@@ -1461,7 +1461,7 @@ static bool append_draw_batch(
     const int *indices,
     int index_count)
 {
-    if (g_batch_texture && g_batch_texture != texture) flush_draw_batch();
+    if (g_batch_vertex_count > 0 && g_batch_texture != texture) flush_draw_batch();
     if (!reserve_draw_batch(
             g_batch_vertex_count + vertex_count,
             g_batch_index_count + index_count)) return false;
@@ -1494,6 +1494,50 @@ static JSValue js_clear(
     return JS_UNDEFINED;
 }
 
+static bool append_texture_region(
+    int id,
+    double sx, double sy, double sw, double sh,
+    double dx, double dy, double dw, double dh,
+    double angle, double center_x, double center_y,
+    int flip_x, int flip_y,
+    double red, double green, double blue, double alpha)
+{
+    double radians = angle * SDL_PI_D / 180.0;
+    double cosine = SDL_cos(radians);
+    double sine = SDL_sin(radians);
+    double points[4][2] = {
+        { 0, 0 }, { dw, 0 }, { 0, dh }, { dw, dh },
+    };
+    SDL_FColor color = {
+        (float)(SDL_clamp(red, 0, 255) / 255.0),
+        (float)(SDL_clamp(green, 0, 255) / 255.0),
+        (float)(SDL_clamp(blue, 0, 255) / 255.0),
+        (float)(SDL_clamp(alpha, 0, 255) / 255.0),
+    };
+    double u0 = sx / g_textures[id].width;
+    double v0 = sy / g_textures[id].height;
+    double u1 = (sx + sw) / g_textures[id].width;
+    double v1 = (sy + sh) / g_textures[id].height;
+    if (flip_x) { double swap = u0; u0 = u1; u1 = swap; }
+    if (flip_y) { double swap = v0; v0 = v1; v1 = swap; }
+    SDL_Vertex vertices[4];
+    const double uvs[4][2] = {{ u0, v0 }, { u1, v0 }, { u0, v1 }, { u1, v1 }};
+    for (int i = 0; i < 4; i++) {
+        double local_x = points[i][0] - center_x;
+        double local_y = points[i][1] - center_y;
+        vertices[i].position.x =
+            (float)(dx + center_x + local_x * cosine - local_y * sine);
+        vertices[i].position.y =
+            (float)(dy + center_y + local_x * sine + local_y * cosine);
+        vertices[i].color = color;
+        vertices[i].tex_coord.x = (float)uvs[i][0];
+        vertices[i].tex_coord.y = (float)uvs[i][1];
+    }
+    const int indices[6] = { 0, 1, 2, 2, 1, 3 };
+    return append_draw_batch(
+        g_textures[id].texture, vertices, 4, indices, 6);
+}
+
 /* --- Binding: drawTexture(id, x, y) --- */
 static JSValue js_drawTexture(
     JSContext *ctx,
@@ -1501,7 +1545,6 @@ static JSValue js_drawTexture(
     int argc,
     JSValueConst *argv)
 {
-    flush_draw_batch();
     int id;
     double dx, dy;
     JS_ToInt32(ctx, &id, argv[0]);
@@ -1509,10 +1552,12 @@ static JSValue js_drawTexture(
     JS_ToFloat64(ctx, &dy, argv[2]);
 
     if (!valid_texture_id(id)) return JS_UNDEFINED;
-    SDL_FRect dst = { (float)dx, (float)dy, 64, 64 };
-    SDL_RenderTexture(g_renderer, g_textures[id].texture, NULL, &dst);
-    g_draw_calls++;
-    g_vertices += 4;
+    append_texture_region(
+        id,
+        0, 0, g_textures[id].width, g_textures[id].height,
+        dx, dy, 64, 64,
+        0, 0, 0, 0, 0,
+        255, 255, 255, 255);
     return JS_UNDEFINED;
 }
 
@@ -1523,7 +1568,6 @@ static JSValue js_drawTextureRotated(
     int argc,
     JSValueConst *argv)
 {
-    flush_draw_batch();
     int id, flipX, flipY;
     double dx, dy, dw, dh, angle, centerX, centerY;
     double red = 255, green = 255, blue = 255, alpha = 255;
@@ -1543,22 +1587,12 @@ static JSValue js_drawTextureRotated(
     if (argc > 13) JS_ToFloat64(ctx, &alpha, argv[13]);
 
     if (!valid_texture_id(id)) return JS_UNDEFINED;
-    SDL_Texture *texture = g_textures[id].texture;
-    SDL_SetTextureColorMod(
-        texture,
-        (Uint8)SDL_clamp(red, 0, 255),
-        (Uint8)SDL_clamp(green, 0, 255),
-        (Uint8)SDL_clamp(blue, 0, 255));
-    SDL_SetTextureAlphaMod(texture, (Uint8)SDL_clamp(alpha, 0, 255));
-    SDL_FRect dst = { (float)dx, (float)dy, (float)dw, (float)dh };
-    SDL_FPoint center = { (float)centerX, (float)centerY };
-    SDL_FlipMode flip = SDL_FLIP_NONE;
-    if (flipX) flip |= SDL_FLIP_HORIZONTAL;
-    if (flipY) flip |= SDL_FLIP_VERTICAL;
-
-    SDL_RenderTextureRotated(g_renderer, texture, NULL, &dst, (double)angle, &center, flip);
-    g_draw_calls++;
-    g_vertices += 4;
+    append_texture_region(
+        id,
+        0, 0, g_textures[id].width, g_textures[id].height,
+        dx, dy, dw, dh,
+        angle, centerX, centerY, flipX, flipY,
+        red, green, blue, alpha);
     return JS_UNDEFINED;
 }
 
@@ -1592,37 +1626,12 @@ static JSValue js_drawTextureRegionRotated(
     if (argc > 17) JS_ToFloat64(ctx, &alpha, argv[17]);
 
     if (!valid_texture_id(id)) return JS_UNDEFINED;
-    double radians = angle * SDL_PI_D / 180.0;
-    double cosine = SDL_cos(radians);
-    double sine = SDL_sin(radians);
-    double points[4][2] = {
-        { 0, 0 }, { dw, 0 }, { 0, dh }, { dw, dh },
-    };
-    SDL_FColor color = {
-        (float)(SDL_clamp(red, 0, 255) / 255.0),
-        (float)(SDL_clamp(green, 0, 255) / 255.0),
-        (float)(SDL_clamp(blue, 0, 255) / 255.0),
-        (float)(SDL_clamp(alpha, 0, 255) / 255.0),
-    };
-    double u0 = sx / g_textures[id].width;
-    double v0 = sy / g_textures[id].height;
-    double u1 = (sx + sw) / g_textures[id].width;
-    double v1 = (sy + sh) / g_textures[id].height;
-    if (flipX) { double swap = u0; u0 = u1; u1 = swap; }
-    if (flipY) { double swap = v0; v0 = v1; v1 = swap; }
-    SDL_Vertex vertices[4];
-    const double uvs[4][2] = {{ u0, v0 }, { u1, v0 }, { u0, v1 }, { u1, v1 }};
-    for (int i = 0; i < 4; i++) {
-        double local_x = points[i][0] - centerX;
-        double local_y = points[i][1] - centerY;
-        vertices[i].position.x = (float)(dx + centerX + local_x * cosine - local_y * sine);
-        vertices[i].position.y = (float)(dy + centerY + local_x * sine + local_y * cosine);
-        vertices[i].color = color;
-        vertices[i].tex_coord.x = (float)uvs[i][0];
-        vertices[i].tex_coord.y = (float)uvs[i][1];
-    }
-    const int indices[6] = { 0, 1, 2, 2, 1, 3 };
-    append_draw_batch(g_textures[id].texture, vertices, 4, indices, 6);
+    append_texture_region(
+        id,
+        sx, sy, sw, sh,
+        dx, dy, dw, dh,
+        angle, centerX, centerY, flipX, flipY,
+        red, green, blue, alpha);
     return JS_UNDEFINED;
 }
 
@@ -1761,7 +1770,6 @@ static JSValue js_drawRect(
     int argc,
     JSValueConst *argv)
 {
-    flush_draw_batch();
     double x, y, width, height, red, green, blue, alpha = 255;
     JS_ToFloat64(ctx, &x, argv[0]);
     JS_ToFloat64(ctx, &y, argv[1]);
@@ -1773,18 +1781,20 @@ static JSValue js_drawRect(
     if (argc > 7) JS_ToFloat64(ctx, &alpha, argv[7]);
 
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(
-        g_renderer,
-        (Uint8)SDL_clamp(red, 0, 255),
-        (Uint8)SDL_clamp(green, 0, 255),
-        (Uint8)SDL_clamp(blue, 0, 255),
-        (Uint8)SDL_clamp(alpha, 0, 255));
-    SDL_FRect rect = {
-        (float)x, (float)y, (float)width, (float)height
+    SDL_FColor color = {
+        (float)(SDL_clamp(red, 0, 255) / 255.0),
+        (float)(SDL_clamp(green, 0, 255) / 255.0),
+        (float)(SDL_clamp(blue, 0, 255) / 255.0),
+        (float)(SDL_clamp(alpha, 0, 255) / 255.0),
     };
-    SDL_RenderFillRect(g_renderer, &rect);
-    g_draw_calls++;
-    g_vertices += 4;
+    SDL_Vertex vertices[4] = {
+        {{ (float)x, (float)y }, color, { 0, 0 }},
+        {{ (float)(x + width), (float)y }, color, { 0, 0 }},
+        {{ (float)x, (float)(y + height) }, color, { 0, 0 }},
+        {{ (float)(x + width), (float)(y + height) }, color, { 0, 0 }},
+    };
+    const int indices[6] = { 0, 1, 2, 2, 1, 3 };
+    append_draw_batch(NULL, vertices, 4, indices, 6);
     return JS_UNDEFINED;
 }
 
