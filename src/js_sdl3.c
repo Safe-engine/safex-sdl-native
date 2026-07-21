@@ -2027,6 +2027,249 @@ static JSValue js_popClipRect(
     return JS_UNDEFINED;
 }
 
+/* --- Binding: submitCommandBuffer(buffer) --- */
+static JSValue js_submitCommandBuffer(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+    (void)this_val;
+    if (argc < 1 || !JS_IsObject(argv[0])) return JS_UNDEFINED;
+
+    JSValue val_cmds = JS_GetPropertyStr(ctx, argv[0], "commands");
+    JSValue val_floats = JS_GetPropertyStr(ctx, argv[0], "floatBuffer");
+    JSValue val_uints = JS_GetPropertyStr(ctx, argv[0], "uintBuffer");
+    JSValue val_shorts = JS_GetPropertyStr(ctx, argv[0], "shortBuffer");
+
+    size_t cmds_off = 0, cmds_len = 0, cmds_size = 0;
+    size_t floats_off = 0, floats_len = 0, floats_size = 0;
+    size_t uints_off = 0, uints_len = 0, uints_size = 0;
+    size_t shorts_off = 0, shorts_len = 0, shorts_size = 0;
+
+    JSValue buf_cmds = JS_GetTypedArrayBuffer(ctx, val_cmds, &cmds_off, &cmds_len, &cmds_size);
+    JSValue buf_floats = JS_GetTypedArrayBuffer(ctx, val_floats, &floats_off, &floats_len, &floats_size);
+    JSValue buf_uints = JS_GetTypedArrayBuffer(ctx, val_uints, &uints_off, &uints_len, &uints_size);
+    JSValue buf_shorts = JS_GetTypedArrayBuffer(ctx, val_shorts, &shorts_off, &shorts_len, &shorts_size);
+
+    size_t sz_cmds = 0, sz_floats = 0, sz_uints = 0, sz_shorts = 0;
+    uint8_t *ptr_cmds = JS_GetArrayBuffer(ctx, &sz_cmds, buf_cmds);
+    uint8_t *ptr_floats = JS_GetArrayBuffer(ctx, &sz_floats, buf_floats);
+    uint8_t *ptr_uints = JS_GetArrayBuffer(ctx, &sz_uints, buf_uints);
+    uint8_t *ptr_shorts = JS_GetArrayBuffer(ctx, &sz_shorts, buf_shorts);
+
+    if (ptr_cmds && ptr_floats && ptr_uints) {
+        const int32_t *cmds = (const int32_t *)(ptr_cmds + cmds_off);
+        const float *floats = (const float *)(ptr_floats + floats_off);
+        const uint32_t *uints = (const uint32_t *)(ptr_uints + uints_off);
+        const uint16_t *shorts = ptr_shorts ? (const uint16_t *)(ptr_shorts + shorts_off) : NULL;
+
+        int num_cmds = (int)(cmds_len / sizeof(int32_t));
+        int cmd_idx = 0;
+        int float_idx = 0;
+        int uint_idx = 0;
+        int short_idx = 0;
+
+        while (cmd_idx < num_cmds) {
+            int op = cmds[cmd_idx++];
+            if (op == 0) break;
+
+            if (op == 1) { // CMD_DRAW_SPRITE
+                int id = (int)uints[uint_idx++];
+                uint32_t c = uints[uint_idx++];
+                double dx = floats[float_idx++];
+                double dy = floats[float_idx++];
+                double dw = floats[float_idx++];
+                double dh = floats[float_idx++];
+                double angle = floats[float_idx++];
+                double cx = floats[float_idx++];
+                double cy = floats[float_idx++];
+                int fx = (int)floats[float_idx++];
+                int fy = (int)floats[float_idx++];
+
+                double r = (c >> 24) & 0xFF;
+                double g = (c >> 16) & 0xFF;
+                double b = (c >> 8) & 0xFF;
+                double a = c & 0xFF;
+
+                if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture) {
+                    append_texture_region(id, 0, 0, g_textures[id].width, g_textures[id].height, dx, dy, dw, dh, angle, cx, cy, fx, fy, r, g, b, a);
+                }
+            } else if (op == 8) { // CMD_DRAW_REGION
+                int id = (int)uints[uint_idx++];
+                uint32_t c = uints[uint_idx++];
+                double sx = floats[float_idx++];
+                double sy = floats[float_idx++];
+                double sw = floats[float_idx++];
+                double sh = floats[float_idx++];
+                double dx = floats[float_idx++];
+                double dy = floats[float_idx++];
+                double dw = floats[float_idx++];
+                double dh = floats[float_idx++];
+                double angle = floats[float_idx++];
+                double cx = floats[float_idx++];
+                double cy = floats[float_idx++];
+                int fx = (int)floats[float_idx++];
+                int fy = (int)floats[float_idx++];
+
+                double r = (c >> 24) & 0xFF;
+                double g = (c >> 16) & 0xFF;
+                double b = (c >> 8) & 0xFF;
+                double a = c & 0xFF;
+
+                if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture) {
+                    append_texture_region(id, sx, sy, sw, sh, dx, dy, dw, dh, angle, cx, cy, fx, fy, r, g, b, a);
+                }
+            } else if (op == 2) { // CMD_DRAW_QUAD
+                int id = (int)uints[uint_idx++];
+                uint32_t c = uints[uint_idx++];
+                double x0 = floats[float_idx++], y0 = floats[float_idx++];
+                double u0 = floats[float_idx++], v0 = floats[float_idx++];
+                double x1 = floats[float_idx++], y1 = floats[float_idx++];
+                double u1 = floats[float_idx++], v1 = floats[float_idx++];
+                double x2 = floats[float_idx++], y2 = floats[float_idx++];
+                double u2 = floats[float_idx++], v2 = floats[float_idx++];
+                double x3 = floats[float_idx++], y3 = floats[float_idx++];
+                double u3 = floats[float_idx++], v3 = floats[float_idx++];
+
+                double r = (c >> 24) & 0xFF;
+                double g = (c >> 16) & 0xFF;
+                double b = (c >> 8) & 0xFF;
+                double a = c & 0xFF;
+
+                if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture) {
+                    SDL_FColor color = {
+                        (float)(r / 255.0), (float)(g / 255.0), (float)(b / 255.0), (float)(a / 255.0)
+                    };
+                    SDL_Vertex vertices[4] = {
+                        { { (float)x0, (float)y0 }, color, { (float)u0, (float)v0 } },
+                        { { (float)x1, (float)y1 }, color, { (float)u1, (float)v1 } },
+                        { { (float)x2, (float)y2 }, color, { (float)u2, (float)v2 } },
+                        { { (float)x3, (float)y3 }, color, { (float)u3, (float)v3 } },
+                    };
+                    const int indices[6] = { 0, 1, 2, 2, 1, 3 };
+                    append_draw_batch(g_textures[id].texture, vertices, 4, indices, 6);
+                }
+            } else if (op == 3) { // CMD_DRAW_MESH
+                int id = (int)uints[uint_idx++];
+                uint32_t c = uints[uint_idx++];
+                int v_count = (int)uints[uint_idx++];
+                int i_count = (int)uints[uint_idx++];
+
+                const float *pos_ptr = &floats[float_idx]; float_idx += v_count * 2;
+                const float *uv_ptr = &floats[float_idx]; float_idx += v_count * 2;
+                double tx = floats[float_idx++], ty = floats[float_idx++];
+                double sx = floats[float_idx++], sy = floats[float_idx++];
+                double cosine = floats[float_idx++], sine = floats[float_idx++];
+
+                const uint16_t *idx_ptr = shorts ? &shorts[short_idx] : NULL;
+                short_idx += i_count;
+
+                double r = (c >> 24) & 0xFF;
+                double g = (c >> 16) & 0xFF;
+                double b = (c >> 8) & 0xFF;
+                double a = c & 0xFF;
+
+                if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture && v_count > 0 && i_count > 0 && idx_ptr) {
+                    if (reserve_input_mesh(v_count, i_count)) {
+                        SDL_FColor color = {
+                            (float)(r / 255.0), (float)(g / 255.0), (float)(b / 255.0), (float)(a / 255.0)
+                        };
+                        for (int i = 0; i < v_count; i++) {
+                            double x = pos_ptr[i * 2] * sx;
+                            double y = pos_ptr[i * 2 + 1] * sy;
+                            g_input_vertices[i].position.x = (float)(tx + x * cosine - y * sine);
+                            g_input_vertices[i].position.y = (float)(ty + x * sine + y * cosine);
+                            g_input_vertices[i].color = color;
+                            g_input_vertices[i].tex_coord.x = uv_ptr[i * 2];
+                            g_input_vertices[i].tex_coord.y = uv_ptr[i * 2 + 1];
+                        }
+                        for (int i = 0; i < i_count; i++) {
+                            g_input_indices[i] = idx_ptr[i];
+                        }
+                        append_draw_batch(g_textures[id].texture, g_input_vertices, v_count, g_input_indices, i_count);
+                    }
+                }
+            } else if (op == 4) { // CMD_DRAW_RECT
+                uint32_t c = uints[uint_idx++];
+                double x = floats[float_idx++];
+                double y = floats[float_idx++];
+                double w = floats[float_idx++];
+                double h = floats[float_idx++];
+
+                double r = (c >> 24) & 0xFF;
+                double g = (c >> 16) & 0xFF;
+                double b = (c >> 8) & 0xFF;
+                double a = c & 0xFF;
+
+                SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+                SDL_FColor color = {
+                    (float)(r / 255.0), (float)(g / 255.0), (float)(b / 255.0), (float)(a / 255.0)
+                };
+                SDL_Vertex vertices[4] = {
+                    {{ (float)x, (float)y }, color, { 0, 0 }},
+                    {{ (float)(x + w), (float)y }, color, { 0, 0 }},
+                    {{ (float)x, (float)(y + h) }, color, { 0, 0 }},
+                    {{ (float)(x + w), (float)(y + h) }, color, { 0, 0 }},
+                };
+                const int indices[6] = { 0, 1, 2, 2, 1, 3 };
+                append_draw_batch(NULL, vertices, 4, indices, 6);
+            } else if (op == 5) { // CMD_DRAW_LINE
+                uint32_t c = uints[uint_idx++];
+                double x1 = floats[float_idx++];
+                double y1 = floats[float_idx++];
+                double x2 = floats[float_idx++];
+                double y2 = floats[float_idx++];
+
+                double r = (c >> 24) & 0xFF;
+                double g = (c >> 16) & 0xFF;
+                double b = (c >> 8) & 0xFF;
+                double a = c & 0xFF;
+
+                flush_draw_batch();
+                SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(g_renderer, (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a);
+                SDL_RenderLine(g_renderer, (float)x1, (float)y1, (float)x2, (float)y2);
+                g_draw_calls++;
+            } else if (op == 6) { // CMD_PUSH_CLIP
+                double x = floats[float_idx++];
+                double y = floats[float_idx++];
+                double w = floats[float_idx++];
+                double h = floats[float_idx++];
+
+                flush_draw_batch();
+                SDL_Rect clip = { (int)x, (int)y, (int)SDL_max(0.0, w), (int)SDL_max(0.0, h) };
+                if (g_clip_depth > 0) {
+                    SDL_Rect intersection;
+                    if (SDL_GetRectIntersection(&g_clip_stack[g_clip_depth - 1], &clip, &intersection)) {
+                        clip = intersection;
+                    } else {
+                        clip = (SDL_Rect){ 0, 0, 0, 0 };
+                    }
+                }
+                g_clip_stack[g_clip_depth++] = clip;
+                SDL_SetRenderClipRect(g_renderer, &clip);
+            } else if (op == 7) { // CMD_POP_CLIP
+                flush_draw_batch();
+                if (g_clip_depth > 0) g_clip_depth--;
+                SDL_SetRenderClipRect(g_renderer, g_clip_depth > 0 ? &g_clip_stack[g_clip_depth - 1] : NULL);
+            }
+        }
+    }
+
+    JS_FreeValue(ctx, buf_cmds);
+    JS_FreeValue(ctx, buf_floats);
+    JS_FreeValue(ctx, buf_uints);
+    JS_FreeValue(ctx, buf_shorts);
+
+    JS_FreeValue(ctx, val_cmds);
+    JS_FreeValue(ctx, val_floats);
+    JS_FreeValue(ctx, val_uints);
+    JS_FreeValue(ctx, val_shorts);
+
+    return JS_UNDEFINED;
+}
+
 /* --- Binding: present() --- */
 static JSValue js_present(
     JSContext *ctx,
@@ -2257,6 +2500,7 @@ static const JSCFunctionListEntry funcs[] =
     JS_CFUNC_DEF("isAudioPlaying",          1, js_isAudioPlaying),
     JS_CFUNC_DEF("updateAudio",              0, js_updateAudio),
     JS_CFUNC_DEF("clear",                   0, js_clear),
+    JS_CFUNC_DEF("submitCommandBuffer",     1, js_submitCommandBuffer),
     JS_CFUNC_DEF("drawTexture",             3, js_drawTexture),
     JS_CFUNC_DEF("drawTextureRotated",     14, js_drawTextureRotated),
     JS_CFUNC_DEF("drawTextureRegionRotated", 18, js_drawTextureRegionRotated),
