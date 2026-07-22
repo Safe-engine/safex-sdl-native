@@ -230,6 +230,34 @@ static void test_local_storage(JSContext *ctx)
     JS_FreeValue(ctx, value);
 }
 
+static void test_invalid_binding_arguments(JSContext *ctx)
+{
+    JSValue module = eval_js(
+        ctx,
+        "import { createWindow, drawRect, loadAudio, loadFont, loadTextTexture, "
+        "releaseTexture, submitCommandBuffer } from 'sdl3';"
+        "globalThis.invalidArgumentsSafe = (() => {"
+        "  let createWindowThrows = false;"
+        "  try { createWindow(); } catch (_) { createWindowThrows = true; }"
+        "  drawRect(); releaseTexture();"
+        "  submitCommandBuffer({ commands: new Int32Array([1]), "
+        "    floatBuffer: new Float32Array(), uintBuffer: new Uint32Array(), "
+        "    shortBuffer: new Uint16Array() });"
+        "  return createWindowThrows && loadAudio() === -1 && loadFont() === -1 "
+        "    && loadTextTexture() === -1;"
+        "})();",
+        JS_EVAL_TYPE_MODULE);
+    JS_FreeValue(ctx, module);
+    if (failures > 0) return;
+
+    JSValue value = eval_js(
+        ctx,
+        "globalThis.invalidArgumentsSafe",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true("invalid native binding arguments are handled safely", JS_ToBool(ctx, value));
+    JS_FreeValue(ctx, value);
+}
+
 static void test_async_await(JSContext *ctx)
 {
     const char *module_source =
@@ -427,6 +455,7 @@ int main(void)
     test_development_resource_path(ctx);
     test_mp3_audio_loading(ctx);
     test_local_storage(ctx);
+    test_invalid_binding_arguments(ctx);
     test_async_await(ctx);
     test_box2d_module_registration(ctx);
     test_window_size_defaults();

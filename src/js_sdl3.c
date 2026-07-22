@@ -7,6 +7,7 @@
 #include "dr_mp3.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -688,6 +689,26 @@ static void destroy_renderer_main_thread(void *userdata)
   }
 }
 
+static void destroy_window_main_thread(void *userdata)
+{
+  (void)userdata;
+  if (g_window)
+  {
+    SDL_DestroyWindow(g_window);
+    g_window = NULL;
+  }
+}
+
+static void start_text_input_main_thread(void *userdata)
+{
+  SDL_StartTextInput(userdata);
+}
+
+static void stop_text_input_main_thread(void *userdata)
+{
+  SDL_StopTextInput(userdata);
+}
+
 static void release_font_id(int id);
 static void release_audio_id(int id);
 
@@ -945,9 +966,18 @@ static JSValue js_createWindow(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 3)
+    return JS_ThrowTypeError(ctx, "createWindow requires title, width, and height");
   const char *title = JS_ToCString(ctx, argv[0]);
+  if (!title)
+    return JS_EXCEPTION;
   JS_ToInt32(ctx, &g_win_w, argv[1]);
   JS_ToInt32(ctx, &g_win_h, argv[2]);
+  if (g_win_w <= 0 || g_win_h <= 0)
+  {
+    JS_FreeCString(ctx, title);
+    return JS_ThrowRangeError(ctx, "window dimensions must be positive");
+  }
   g_resolution_policy = js_resolution_policy(
       ctx,
       argc > 3 ? argv[3] : JS_UNDEFINED);
@@ -1010,6 +1040,46 @@ static JSValue js_createWindow(
   return JS_UNDEFINED;
 }
 
+typedef struct ViewportMetricsTaskArgs
+{
+  int screen_w;
+  int screen_h;
+  SDL_FRect viewport;
+  float safe_x;
+  float safe_y;
+  float safe_right;
+  float safe_bottom;
+} ViewportMetricsTaskArgs;
+
+static void get_viewport_metrics_main_thread(void *userdata)
+{
+  ViewportMetricsTaskArgs *args = userdata;
+  args->screen_w = g_win_w;
+  args->screen_h = g_win_h;
+  args->viewport = js_presentation_rect(args->screen_w, args->screen_h);
+  args->safe_x = 0.0f;
+  args->safe_y = 0.0f;
+  args->safe_right = (float)g_win_w;
+  args->safe_bottom = (float)g_win_h;
+  if (!g_window || !g_renderer)
+    return;
+
+  SDL_Rect safe = {0, 0, args->screen_w, args->screen_h};
+  SDL_GetWindowSize(g_window, &args->screen_w, &args->screen_h);
+  args->viewport = js_presentation_rect(args->screen_w, args->screen_h);
+  if (!SDL_GetWindowSafeArea(g_window, &safe))
+    safe = (SDL_Rect){0, 0, args->screen_w, args->screen_h};
+  SDL_RenderCoordinatesFromWindow(g_renderer, (float)safe.x, (float)safe.y,
+                                  &args->safe_x, &args->safe_y);
+  SDL_RenderCoordinatesFromWindow(g_renderer, (float)(safe.x + safe.w),
+                                  (float)(safe.y + safe.h),
+                                  &args->safe_right, &args->safe_bottom);
+  args->safe_x = SDL_clamp(args->safe_x, 0.0f, (float)g_win_w);
+  args->safe_y = SDL_clamp(args->safe_y, 0.0f, (float)g_win_h);
+  args->safe_right = SDL_clamp(args->safe_right, 0.0f, (float)g_win_w);
+  args->safe_bottom = SDL_clamp(args->safe_bottom, 0.0f, (float)g_win_h);
+}
+
 /* --- Binding: getViewportMetrics() --- */
 static JSValue js_getViewportMetrics(
     JSContext *ctx,
@@ -1021,46 +1091,22 @@ static JSValue js_getViewportMetrics(
   (void)argc;
   (void)argv;
 
-  int screen_w = g_win_w;
-  int screen_h = g_win_h;
-  SDL_Rect safe = {0, 0, screen_w, screen_h};
-  SDL_GetWindowSize(g_window, &screen_w, &screen_h);
-  SDL_FRect viewport = js_presentation_rect(screen_w, screen_h);
-  if (!SDL_GetWindowSafeArea(g_window, &safe))
-  {
-    safe = (SDL_Rect){0, 0, screen_w, screen_h};
-  }
-
-  float safe_x = 0.0f;
-  float safe_y = 0.0f;
-  float safe_right = (float)g_win_w;
-  float safe_bottom = (float)g_win_h;
-  SDL_RenderCoordinatesFromWindow(
-      g_renderer, (float)safe.x, (float)safe.y, &safe_x, &safe_y);
-  SDL_RenderCoordinatesFromWindow(
-      g_renderer,
-      (float)(safe.x + safe.w),
-      (float)(safe.y + safe.h),
-      &safe_right,
-      &safe_bottom);
-  safe_x = SDL_clamp(safe_x, 0.0f, (float)g_win_w);
-  safe_y = SDL_clamp(safe_y, 0.0f, (float)g_win_h);
-  safe_right = SDL_clamp(safe_right, 0.0f, (float)g_win_w);
-  safe_bottom = SDL_clamp(safe_bottom, 0.0f, (float)g_win_h);
+  ViewportMetricsTaskArgs metrics;
+  js_run_on_main_thread(get_viewport_metrics_main_thread, &metrics);
 
   double values[] = {
       g_win_w,
       g_win_h,
-      screen_w,
-      screen_h,
-      viewport.x,
-      viewport.y,
-      viewport.w,
-      viewport.h,
-      safe_x,
-      safe_y,
-      safe_right - safe_x,
-      safe_bottom - safe_y,
+      metrics.screen_w,
+      metrics.screen_h,
+      metrics.viewport.x,
+      metrics.viewport.y,
+      metrics.viewport.w,
+      metrics.viewport.h,
+      metrics.safe_x,
+      metrics.safe_y,
+      metrics.safe_right - metrics.safe_x,
+      metrics.safe_bottom - metrics.safe_y,
   };
   JSValue result = JS_NewArray(ctx);
   for (uint32_t i = 0; i < 12; i++)
@@ -1071,18 +1117,33 @@ static JSValue js_getViewportMetrics(
 }
 
 /* --- Binding: getWinSize() --- */
+typedef struct WindowSizeTaskArgs
+{
+  int width;
+  int height;
+} WindowSizeTaskArgs;
+
+static void get_window_size_in_pixels_main_thread(void *userdata)
+{
+  WindowSizeTaskArgs *args = userdata;
+  args->width = g_win_w;
+  args->height = g_win_h;
+  if (g_window && SDL_GetWindowSizeInPixels(g_window, &args->width, &args->height))
+  {
+    return;
+  }
+  if (g_window && SDL_GetWindowSize(g_window, &args->width, &args->height))
+  {
+    return;
+  }
+}
+
 static void get_window_size_in_pixels(int *width, int *height)
 {
-  if (g_window && SDL_GetWindowSizeInPixels(g_window, width, height))
-  {
-    return;
-  }
-  if (g_window && SDL_GetWindowSize(g_window, width, height))
-  {
-    return;
-  }
-  *width = g_win_w;
-  *height = g_win_h;
+  WindowSizeTaskArgs args;
+  js_run_on_main_thread(get_window_size_in_pixels_main_thread, &args);
+  *width = args.width;
+  *height = args.height;
 }
 
 static JSValue js_getWinSize(
@@ -1184,6 +1245,8 @@ static JSValue js_loadTexture(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_NewInt32(ctx, -1);
   const char *path = JS_ToCString(ctx, argv[0]);
   if (!path)
     return JS_EXCEPTION;
@@ -1495,6 +1558,8 @@ static JSValue js_loadFont(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 2)
+    return JS_NewInt32(ctx, -1);
   const char *path = JS_ToCString(ctx, argv[0]);
   if (!path)
     return JS_EXCEPTION;
@@ -1572,6 +1637,8 @@ static JSValue js_loadTextTexture(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 2)
+    return JS_NewInt32(ctx, -1);
   int font_id;
   JS_ToInt32(ctx, &font_id, argv[0]);
   if (!valid_font_id(font_id))
@@ -1658,6 +1725,8 @@ static JSValue js_releaseTexture(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_UNDEFINED;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   release_texture_id(id);
@@ -1670,6 +1739,8 @@ static JSValue js_releaseFont(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_UNDEFINED;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   release_font_id(id);
@@ -1682,6 +1753,8 @@ static JSValue js_getTextureWidth(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_NewInt32(ctx, 0);
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   return JS_NewInt32(ctx, valid_texture_id(id) ? g_textures[id].width : 0);
@@ -1693,6 +1766,8 @@ static JSValue js_getTextureHeight(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_NewInt32(ctx, 0);
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   return JS_NewInt32(ctx, valid_texture_id(id) ? g_textures[id].height : 0);
@@ -1705,7 +1780,8 @@ static JSValue js_loadAudio(
     JSValueConst *argv)
 {
   (void)this_val;
-  (void)argc;
+  if (argc < 1)
+    return JS_NewInt32(ctx, -1);
   const char *path = JS_ToCString(ctx, argv[0]);
   if (!path)
     return JS_EXCEPTION;
@@ -1821,7 +1897,8 @@ static JSValue js_releaseAudio(
     JSValueConst *argv)
 {
   (void)this_val;
-  (void)argc;
+  if (argc < 1)
+    return JS_UNDEFINED;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   release_audio_id(id);
@@ -1835,6 +1912,8 @@ static JSValue js_playAudio(
     JSValueConst *argv)
 {
   (void)this_val;
+  if (argc < 2)
+    return JS_NewInt32(ctx, -1);
   int audio_id;
   int loop = 0;
   double volume = 1.0;
@@ -1887,7 +1966,8 @@ static JSValue js_stopAudio(
     JSValueConst *argv)
 {
   (void)this_val;
-  (void)argc;
+  if (argc < 1)
+    return JS_UNDEFINED;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   destroy_audio_voice(id);
@@ -1901,7 +1981,8 @@ static JSValue js_pauseAudio(
     JSValueConst *argv)
 {
   (void)this_val;
-  (void)argc;
+  if (argc < 1)
+    return JS_UNDEFINED;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   if (valid_audio_voice_id(id) && !g_audio_voices[id].paused)
@@ -1920,7 +2001,8 @@ static JSValue js_resumeAudio(
     JSValueConst *argv)
 {
   (void)this_val;
-  (void)argc;
+  if (argc < 1)
+    return JS_UNDEFINED;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
   if (valid_audio_voice_id(id) && g_audio_voices[id].paused)
@@ -1940,6 +2022,8 @@ static JSValue js_setAudioVolume(
     JSValueConst *argv)
 {
   (void)this_val;
+  if (argc < 2)
+    return JS_UNDEFINED;
   (void)argc;
   int id;
   double volume;
@@ -1970,6 +2054,8 @@ static JSValue js_isAudioPlaying(
     JSValueConst *argv)
 {
   (void)this_val;
+  if (argc < 1)
+    return JS_FALSE;
   (void)argc;
   int id;
   JS_ToInt32(ctx, &id, argv[0]);
@@ -2127,6 +2213,7 @@ static JSValue js_clear(
   flush_draw_batch();
   g_draw_calls = 0;
   g_vertices = 0;
+  g_clip_depth = 0;
   reset_render_state_cache();
   cached_SetRenderDrawColor(g_renderer, 9, 15, 29, 255);
   SDL_RenderClear(g_renderer);
@@ -2198,6 +2285,8 @@ static JSValue js_drawTexture(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 3)
+    return JS_UNDEFINED;
   int id;
   double dx, dy;
   JS_ToInt32(ctx, &id, argv[0]);
@@ -2222,6 +2311,8 @@ static JSValue js_drawTextureRotated(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 10)
+    return JS_UNDEFINED;
   int id, flipX, flipY;
   double dx, dy, dw, dh, angle, centerX, centerY;
   double red = 255, green = 255, blue = 255, alpha = 255;
@@ -2262,6 +2353,8 @@ static JSValue js_drawTextureRegionRotated(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 14)
+    return JS_UNDEFINED;
   int id, flipX, flipY;
   double sx, sy, sw, sh, dx, dy, dw, dh, angle, centerX, centerY;
   double red = 255, green = 255, blue = 255, alpha = 255;
@@ -2306,6 +2399,8 @@ static JSValue js_drawTextureQuad(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 17)
+    return JS_UNDEFINED;
   int id;
   double values[16];
   double red = 255, green = 255, blue = 255, alpha = 255;
@@ -2353,6 +2448,8 @@ static JSValue js_drawTextureMesh(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 4)
+    return JS_UNDEFINED;
   int id;
   size_t position_offset, position_length, position_size;
   size_t uv_offset, uv_length, uv_size;
@@ -2465,6 +2562,8 @@ static JSValue js_drawRect(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 7)
+    return JS_UNDEFINED;
   double x, y, width, height, red, green, blue, alpha = 255;
   JS_ToFloat64(ctx, &x, argv[0]);
   JS_ToFloat64(ctx, &y, argv[1]);
@@ -2512,6 +2611,8 @@ static JSValue js_drawLine(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 7)
+    return JS_UNDEFINED;
   flush_draw_batch();
   (void)this_val;
   double x1, y1, x2, y2, red, green, blue, alpha = 255;
@@ -2538,6 +2639,8 @@ static JSValue js_drawPoint(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 5)
+    return JS_UNDEFINED;
   flush_draw_batch();
   (void)this_val;
   double x, y, red, green, blue, alpha = 255;
@@ -2562,6 +2665,8 @@ static JSValue js_drawCircle(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 6)
+    return JS_UNDEFINED;
   flush_draw_batch();
   (void)this_val;
   double x, y, radius, red, green, blue, alpha = 255;
@@ -2613,6 +2718,8 @@ static JSValue js_drawPolyline(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 4)
+    return JS_UNDEFINED;
   flush_draw_batch();
   (void)this_val;
   if (argc < 5)
@@ -2679,6 +2786,8 @@ static JSValue js_pushClipRect(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 4)
+    return JS_UNDEFINED;
   flush_draw_batch();
   double x, y, width, height;
   JS_ToFloat64(ctx, &x, argv[0]);
@@ -2817,6 +2926,14 @@ static JSValue js_submitCommandBuffer(
     floats_len = g_executing_render_frame->floats_len;
     uints_len = g_executing_render_frame->uints_len;
     shorts_len = g_executing_render_frame->shorts_len;
+    cmds_size = sizeof(int32_t);
+    floats_size = sizeof(float);
+    uints_size = sizeof(uint32_t);
+    shorts_size = sizeof(uint16_t);
+    sz_cmds = cmds_len;
+    sz_floats = floats_len;
+    sz_uints = uints_len;
+    sz_shorts = shorts_len;
   }
   else
   {
@@ -2835,8 +2952,21 @@ static JSValue js_submitCommandBuffer(
     ptr_shorts = JS_GetArrayBuffer(ctx, &sz_shorts, buf_shorts);
   }
 
-  if (g_render_queue_enabled && !g_executing_render_frame &&
-      ptr_cmds && ptr_floats && ptr_uints)
+  bool valid_buffers = ptr_cmds && ptr_floats && ptr_uints &&
+                       cmds_size == sizeof(int32_t) &&
+                       floats_size == sizeof(float) &&
+                       uints_size == sizeof(uint32_t) &&
+                       (!shorts_len || (ptr_shorts && shorts_size == sizeof(uint16_t))) &&
+                       cmds_off <= sz_cmds && cmds_len <= sz_cmds - cmds_off &&
+                       floats_off <= sz_floats && floats_len <= sz_floats - floats_off &&
+                       uints_off <= sz_uints && uints_len <= sz_uints - uints_off &&
+                       shorts_off <= sz_shorts && shorts_len <= sz_shorts - shorts_off &&
+                       cmds_len % sizeof(int32_t) == 0 &&
+                       floats_len % sizeof(float) == 0 &&
+                       uints_len % sizeof(uint32_t) == 0 &&
+                       shorts_len % sizeof(uint16_t) == 0;
+
+  if (g_render_queue_enabled && !g_executing_render_frame && valid_buffers)
   {
 
     SDL_LockMutex(g_render_queue_mutex);
@@ -2921,18 +3051,21 @@ static JSValue js_submitCommandBuffer(
     return JS_UNDEFINED;
   }
 
-  if (ptr_cmds && ptr_floats && ptr_uints)
+  if (valid_buffers)
   {
     const int32_t *cmds = (const int32_t *)(ptr_cmds + cmds_off);
     const float *floats = (const float *)(ptr_floats + floats_off);
     const uint32_t *uints = (const uint32_t *)(ptr_uints + uints_off);
     const uint16_t *shorts = ptr_shorts ? (const uint16_t *)(ptr_shorts + shorts_off) : NULL;
 
-    int num_cmds = (int)(cmds_len / sizeof(int32_t));
-    int cmd_idx = 0;
-    int float_idx = 0;
-    int uint_idx = 0;
-    int short_idx = 0;
+    size_t num_cmds = cmds_len / sizeof(int32_t);
+    size_t float_count = floats_len / sizeof(float);
+    size_t uint_count = uints_len / sizeof(uint32_t);
+    size_t short_count = shorts_len / sizeof(uint16_t);
+    size_t cmd_idx = 0;
+    size_t float_idx = 0;
+    size_t uint_idx = 0;
+    size_t short_idx = 0;
 
     while (cmd_idx < num_cmds)
     {
@@ -2942,6 +3075,8 @@ static JSValue js_submitCommandBuffer(
 
       if (op == 1)
       { // CMD_DRAW_SPRITE
+        if (uint_count - uint_idx < 2 || float_count - float_idx < 9)
+          break;
         int id = (int)uints[uint_idx++];
         uint32_t c = uints[uint_idx++];
         double dx = floats[float_idx++];
@@ -2966,6 +3101,8 @@ static JSValue js_submitCommandBuffer(
       }
       else if (op == 8)
       { // CMD_DRAW_REGION
+        if (uint_count - uint_idx < 2 || float_count - float_idx < 13)
+          break;
         int id = (int)uints[uint_idx++];
         uint32_t c = uints[uint_idx++];
         double sx = floats[float_idx++];
@@ -2994,6 +3131,8 @@ static JSValue js_submitCommandBuffer(
       }
       else if (op == 2)
       { // CMD_DRAW_QUAD
+        if (uint_count - uint_idx < 2 || float_count - float_idx < 16)
+          break;
         int id = (int)uints[uint_idx++];
         uint32_t c = uints[uint_idx++];
         double x0 = floats[float_idx++], y0 = floats[float_idx++];
@@ -3026,10 +3165,19 @@ static JSValue js_submitCommandBuffer(
       }
       else if (op == 3)
       { // CMD_DRAW_MESH
+        if (uint_count - uint_idx < 4)
+          break;
         int id = (int)uints[uint_idx++];
         uint32_t c = uints[uint_idx++];
-        int v_count = (int)uints[uint_idx++];
-        int i_count = (int)uints[uint_idx++];
+        uint32_t v_count_raw = uints[uint_idx++];
+        uint32_t i_count_raw = uints[uint_idx++];
+        if (v_count_raw > INT_MAX || i_count_raw > INT_MAX ||
+            float_count - float_idx < 6 || i_count_raw > short_count - short_idx)
+          break;
+        if (v_count_raw > (float_count - float_idx - 6) / 4)
+          break;
+        int v_count = (int)v_count_raw;
+        int i_count = (int)i_count_raw;
 
         const float *pos_ptr = &floats[float_idx];
         float_idx += v_count * 2;
@@ -3073,6 +3221,8 @@ static JSValue js_submitCommandBuffer(
       }
       else if (op == 4)
       { // CMD_DRAW_RECT
+        if (uint_count - uint_idx < 1 || float_count - float_idx < 4)
+          break;
         uint32_t c = uints[uint_idx++];
         double x = floats[float_idx++];
         double y = floats[float_idx++];
@@ -3098,6 +3248,8 @@ static JSValue js_submitCommandBuffer(
       }
       else if (op == 5)
       { // CMD_DRAW_LINE
+        if (uint_count - uint_idx < 1 || float_count - float_idx < 4)
+          break;
         uint32_t c = uints[uint_idx++];
         double x1 = floats[float_idx++];
         double y1 = floats[float_idx++];
@@ -3117,6 +3269,8 @@ static JSValue js_submitCommandBuffer(
       }
       else if (op == 6)
       { // CMD_PUSH_CLIP
+        if (float_count - float_idx < 4)
+          break;
         double x = floats[float_idx++];
         double y = floats[float_idx++];
         double w = floats[float_idx++];
@@ -3136,6 +3290,8 @@ static JSValue js_submitCommandBuffer(
             clip = (SDL_Rect){0, 0, 0, 0};
           }
         }
+        if (g_clip_depth >= MAX_CLIP_DEPTH)
+          continue;
         g_clip_stack[g_clip_depth++] = clip;
         cached_SetRenderClipRect(g_renderer, &clip);
       }
@@ -3145,6 +3301,10 @@ static JSValue js_submitCommandBuffer(
         if (g_clip_depth > 0)
           g_clip_depth--;
         cached_SetRenderClipRect(g_renderer, g_clip_depth > 0 ? &g_clip_stack[g_clip_depth - 1] : NULL);
+      }
+      else
+      {
+        break;
       }
     }
   }
@@ -3203,6 +3363,8 @@ static JSValue js_onInit(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onInit requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_onInit);
@@ -3218,6 +3380,8 @@ static JSValue js_onUpdate(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onUpdate requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_onUpdate);
@@ -3232,6 +3396,8 @@ static JSValue js_onRender(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onRender requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_onRender);
@@ -3246,6 +3412,8 @@ static JSValue js_onTouchStart(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onTouchStart requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_touchStart);
@@ -3260,6 +3428,8 @@ static JSValue js_onTouchMove(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onTouchMove requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_touchMove);
@@ -3274,6 +3444,8 @@ static JSValue js_onTouchEnd(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onTouchEnd requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_touchEnd);
@@ -3288,6 +3460,8 @@ static JSValue js_onTextInput(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onTextInput requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_textInput);
@@ -3302,6 +3476,8 @@ static JSValue js_onKeyDown(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onKeyDown requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_keyDown);
@@ -3316,6 +3492,8 @@ static JSValue js_onKeyUp(
     int argc,
     JSValueConst *argv)
 {
+  if (argc < 1)
+    return JS_ThrowTypeError(ctx, "onKeyUp requires a callback");
   if (!JS_IsFunction(ctx, argv[0]))
     return JS_EXCEPTION;
   JS_FreeValue(ctx, g_keyUp);
@@ -3333,7 +3511,7 @@ static JSValue js_startTextInput(
   (void)this_val;
   (void)argc;
   (void)argv;
-  SDL_StartTextInput(g_window);
+  js_run_on_main_thread(start_text_input_main_thread, g_window);
   return JS_UNDEFINED;
 }
 
@@ -3347,7 +3525,7 @@ static JSValue js_stopTextInput(
   (void)this_val;
   (void)argc;
   (void)argv;
-  SDL_StopTextInput(g_window);
+  js_run_on_main_thread(stop_text_input_main_thread, g_window);
   return JS_UNDEFINED;
 }
 
@@ -3367,7 +3545,8 @@ static JSValue js_set_callback(
       JSValueConst *argv)                              \
   {                                                    \
     (void)this_val;                                    \
-    (void)argc;                                        \
+    if (argc < 1)                                      \
+      return JS_ThrowTypeError(ctx, "callback is required"); \
     return js_set_callback(ctx, argv[0], &slot);       \
   }
 
@@ -3768,8 +3947,7 @@ void js_sdl3_shutdown(JSContext *ctx)
   }
   if (g_window)
   {
-    SDL_DestroyWindow(g_window);
-    g_window = NULL;
+    js_run_on_main_thread(destroy_window_main_thread, NULL);
   }
   if (g_ft_library)
   {

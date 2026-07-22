@@ -626,6 +626,7 @@ static JSValue js_getContactEvents(JSContext *ctx, JSValueConst this_val, int ar
     }
 
     b2ContactEvents events = b2World_GetContactEvents(world->id);
+    uint32_t begin_index = 0;
     for (int i = 0; i < events.beginCount; i++) {
         JsBox2DBody *a = body_from_shape(events.beginEvents[i].shapeIdA);
         JsBox2DBody *b = body_from_shape(events.beginEvents[i].shapeIdB);
@@ -633,8 +634,9 @@ static JSValue js_getContactEvents(JSContext *ctx, JSValueConst this_val, int ar
         JSValue pair = JS_NewArray(ctx);
         JS_SetPropertyUint32(ctx, pair, 0, JS_NewInt32(ctx, a->user_data));
         JS_SetPropertyUint32(ctx, pair, 1, JS_NewInt32(ctx, b->user_data));
-        JS_SetPropertyUint32(ctx, begin, (uint32_t)i, pair);
+        JS_SetPropertyUint32(ctx, begin, begin_index++, pair);
     }
+    uint32_t end_index = 0;
     for (int i = 0; i < events.endCount; i++) {
         JsBox2DBody *a = body_from_shape(events.endEvents[i].shapeIdA);
         JsBox2DBody *b = body_from_shape(events.endEvents[i].shapeIdB);
@@ -642,7 +644,7 @@ static JSValue js_getContactEvents(JSContext *ctx, JSValueConst this_val, int ar
         JSValue pair = JS_NewArray(ctx);
         JS_SetPropertyUint32(ctx, pair, 0, JS_NewInt32(ctx, a->user_data));
         JS_SetPropertyUint32(ctx, pair, 1, JS_NewInt32(ctx, b->user_data));
-        JS_SetPropertyUint32(ctx, end, (uint32_t)i, pair);
+        JS_SetPropertyUint32(ctx, end, end_index++, pair);
     }
     JS_SetPropertyStr(ctx, result, "begin", begin);
     JS_SetPropertyStr(ctx, result, "end", end);

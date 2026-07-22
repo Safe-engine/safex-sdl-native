@@ -531,7 +531,9 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
     js_convert_event_to_render_coordinates(event);
     enqueue_event(state, event);
 
-    if (event->type == SDL_EVENT_QUIT || event->type == SDL_EVENT_TERMINATING) {
+    if (event->type == SDL_EVENT_QUIT ||
+        event->type == SDL_EVENT_TERMINATING ||
+        event->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         return SDL_APP_SUCCESS;
     }
 
@@ -611,4 +613,3 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
     exit(result == SDL_APP_FAILURE ? 1 : 0);
 #endif
 }
-

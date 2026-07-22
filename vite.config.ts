@@ -14,6 +14,13 @@ function runSdl3jsPlugin() {
     }
   }
 
+  const exitWithChild = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (code && code !== 0) {
+      console.error(`[run-sdl3js] sdl3js exited with code ${code}${signal ? ` (${signal})` : ''}`)
+    }
+    process.exit(code ?? 0)
+  }
+
   process.on('exit', killChild)
   process.on('SIGINT', () => {
     killChild()
@@ -38,15 +45,17 @@ function runSdl3jsPlugin() {
       }
 
       console.log('[run-sdl3js] Starting ./build/sdl3js...')
-      child = spawn(path.resolve(__dirname, './build/sdl3js'), [], { stdio: 'inherit' })
+      const nextChild = spawn(path.resolve(__dirname, './build/sdl3js'), [], { stdio: 'inherit' })
+      child = nextChild
 
-      child.on('error', (err) => {
+      nextChild.on('error', (err) => {
         console.error('[run-sdl3js] Failed to start sdl3js:', err)
       })
-      child.on('exit', (code, signal) => {
-        if (code && code !== 0) {
-          console.error(`[run-sdl3js] sdl3js exited with code ${code}${signal ? ` (${signal})` : ''}`)
-        }
+      nextChild.on('exit', (code, signal) => {
+        if (child !== nextChild) return
+
+        child = null
+        exitWithChild(code, signal)
       })
     },
   }
