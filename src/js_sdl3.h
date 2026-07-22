@@ -14,6 +14,7 @@ void js_set_frame_timing(float delta_time);
 bool js_enable_render_queue(void);
 void js_disable_render_queue(void);
 void js_destroy_render_queue(void);
+void js_collect_retired_textures(void);
 bool js_render_pending_frame(void);
 
 /* helpers for main.c game loop */
@@ -61,4 +62,3 @@ void js_prof_record_render(Uint64 exec_ns, Uint64 present_ns, uint32_t cmd_count
 void js_prof_record_buffer_grow(void);
 void js_prof_record_dropped_frame(void);
 #endif
-

@@ -325,6 +325,7 @@ static int run_logic_loop(void *userdata)
         previous_ticks = now_ns;
 
         process_queued_events(state);
+        js_collect_retired_textures();
 
         Uint64 update_start_ns = SDL_GetTicksNS();
         js_execute_pending_job(state->runtime);
@@ -544,11 +545,7 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 {
     (void)appstate;
     process_main_thread_jobs();
-    bool rendered = js_render_pending_frame();
-    if (!rendered) {
-        /* Yield for 1ms when no frame is ready to avoid 100% CPU busy-spin on main thread */
-        SDL_DelayNS(1000000ULL);
-    }
+    js_render_pending_frame();
     return SDL_APP_CONTINUE;
 }
 

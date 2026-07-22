@@ -573,6 +573,7 @@ static void destroy_texture_on_main_thread(SDL_Texture *texture)
 }
 
 #define MAX_PENDING_DESTROY_TEXTURES 64
+static void release_font_id(int id);
 static SDL_Texture *g_pending_destroy_textures[MAX_PENDING_DESTROY_TEXTURES];
 static int g_pending_destroy_texture_count = 0;
 static SDL_Mutex *g_pending_destroy_texture_mutex = NULL;
@@ -587,19 +588,14 @@ static void queue_deferred_texture_destroy(SDL_Texture *texture)
     return;
   }
   if (!g_pending_destroy_texture_mutex)
+    return;
+  SDL_LockMutex(g_pending_destroy_texture_mutex);
+  if (g_pending_destroy_texture_count < MAX_PENDING_DESTROY_TEXTURES)
   {
-    g_pending_destroy_texture_mutex = SDL_CreateMutex();
+    g_pending_destroy_textures[g_pending_destroy_texture_count++] = texture;
+    texture = NULL;
   }
-  if (g_pending_destroy_texture_mutex)
-  {
-    SDL_LockMutex(g_pending_destroy_texture_mutex);
-    if (g_pending_destroy_texture_count < MAX_PENDING_DESTROY_TEXTURES)
-    {
-      g_pending_destroy_textures[g_pending_destroy_texture_count++] = texture;
-      texture = NULL;
-    }
-    SDL_UnlockMutex(g_pending_destroy_texture_mutex);
-  }
+  SDL_UnlockMutex(g_pending_destroy_texture_mutex);
   if (texture)
   {
     destroy_texture_on_main_thread(texture);
@@ -608,7 +604,7 @@ static void queue_deferred_texture_destroy(SDL_Texture *texture)
 
 static void flush_deferred_texture_destroys(void)
 {
-  if (!g_pending_destroy_texture_mutex || g_pending_destroy_texture_count == 0)
+  if (!g_pending_destroy_texture_mutex)
     return;
   SDL_Texture *to_destroy[MAX_PENDING_DESTROY_TEXTURES];
   int count = 0;
@@ -626,6 +622,40 @@ static void flush_deferred_texture_destroys(void)
   {
     if (to_destroy[i])
       SDL_DestroyTexture(to_destroy[i]);
+  }
+}
+
+void js_collect_retired_textures(void)
+{
+  if (!g_render_queue_mutex)
+    return;
+
+  SDL_LockMutex(g_render_queue_mutex);
+  for (int i = 0; i < RENDER_BUFFER_COUNT; i++)
+  {
+    if (g_render_buffers[i].state != RENDER_BUFFER_FREE)
+    {
+      SDL_UnlockMutex(g_render_queue_mutex);
+      return;
+    }
+  }
+  SDL_UnlockMutex(g_render_queue_mutex);
+
+  for (int i = 0; i < MAX_TEXTURES; i++)
+  {
+    TextureAsset *asset = &g_textures[i];
+    if (!asset->texture || asset->refs != 0)
+      continue;
+
+    SDL_Texture *texture = asset->texture;
+    char *key = asset->key;
+    TextureKind kind = asset->kind;
+    int font_id = asset->font_id;
+    memset(asset, 0, sizeof(*asset));
+    queue_deferred_texture_destroy(texture);
+    free(key);
+    if (kind == TEXTURE_TEXT)
+      release_font_id(font_id);
   }
 }
 
@@ -717,13 +747,11 @@ static void release_texture_id(int id)
   if (!valid_texture_id(id))
     return;
   TextureAsset *asset = &g_textures[id];
+  if (asset->refs <= 0)
+    return;
   if (--asset->refs > 0)
     return;
-  queue_deferred_texture_destroy(asset->texture);
-  free(asset->key);
-  if (asset->kind == TEXTURE_TEXT)
-    release_font_id(asset->font_id);
-  memset(asset, 0, sizeof(*asset));
+  /* Keep the slot alive until every queued frame has finished using its id. */
 }
 
 static void release_font_id(int id)
@@ -3832,6 +3860,10 @@ int js_init_console(JSContext *ctx)
 
 int js_init_sdl3(JSContext *ctx)
 {
+  if (!g_pending_destroy_texture_mutex)
+    g_pending_destroy_texture_mutex = SDL_CreateMutex();
+  if (!g_pending_destroy_texture_mutex)
+    return -1;
   js_init_module_sdl3(ctx, "sdl3");
 #ifdef JS_SDL_ENABLE_BOX2D_MODULE
   js_init_box2d(ctx);
@@ -4029,6 +4061,9 @@ bool js_render_pending_frame(void)
     return false;
 
   SDL_LockMutex(g_render_queue_mutex);
+  bool waited_for_frame = false;
+find_newest_frame:
+  ;
   int newest_idx = -1;
   Uint64 newest_time = 0;
 
@@ -4060,8 +4095,19 @@ bool js_render_pending_frame(void)
 
   if (newest_idx < 0)
   {
-    SDL_UnlockMutex(g_render_queue_mutex);
-    return false;
+    if (waited_for_frame)
+    {
+      SDL_UnlockMutex(g_render_queue_mutex);
+      return false;
+    }
+    waited_for_frame = true;
+    SDL_WaitConditionTimeout(g_render_queue_ready, g_render_queue_mutex, 1);
+    if (!g_render_queue_enabled)
+    {
+      SDL_UnlockMutex(g_render_queue_mutex);
+      return false;
+    }
+    goto find_newest_frame;
   }
 
   RenderFrame *frame = &g_render_buffers[newest_idx];
