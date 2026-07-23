@@ -72,8 +72,8 @@ static JSValue eval_js(JSContext *ctx, const char *source, int flags)
 static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
 {
     const char *source =
+        "import * as sdl from 'sdl3';"
         "import {"
-        "  drawTexture, drawTextureMesh, drawTextureRegionRotated, drawTextureRotated,"
         "  getTextureHeight, getTextureWidth, isAudioPlaying, isNative,"
         "  loadTextFile, submitCommandBuffer,"
         "  onBackground, onForeground, onInit, onInterruption, onLowMemory,"
@@ -98,12 +98,7 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
         "resumeAudio(-1);"
         "setAudioVolume(-1, 0.5);"
         "updateAudio();"
-        "drawTexture(-1, 1, 2);"
-        "drawTextureMesh(-1, new Float32Array([0, 0, 1, 0, 0, 1]),"
-        "  new Float32Array([0, 0, 1, 0, 0, 1]), new Uint16Array([0, 1, 2]),"
-        "  255, 255, 255, 255, 10, 20, 2, 3, 1, 0);"
-        "drawTextureRotated(-1, 1, 2, 3, 4, 5, 6, 7, 1, 0);"
-        "drawTextureRegionRotated(-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1);"
+        "globalThis.legacyDrawBindingsRemoved = !('drawTexture' in sdl) && !('drawTextureMesh' in sdl) && !('drawTextureRegionRotated' in sdl) && !('drawTextureRotated' in sdl) && !('drawTextureQuad' in sdl) && !('drawRect' in sdl) && !('drawLine' in sdl) && !('drawPoint' in sdl) && !('drawCircle' in sdl) && !('drawPolyline' in sdl) && !('pushClipRect' in sdl) && !('popClipRect' in sdl);"
         "submitCommandBuffer({"
         "  commands: new Int32Array([1, 4, 0]),"
         "  floatBuffer: new Float32Array([0, 0, 10, 10, 0, 0, 0, 0, 0, 10, 20, 30, 40]),"
@@ -180,6 +175,15 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
         "sdl3 identifies the native runtime",
         JS_ToBool(ctx, native_runtime));
     JS_FreeValue(ctx, native_runtime);
+
+    JSValue legacy_draw_bindings_removed = eval_js(
+        ctx,
+        "globalThis.legacyDrawBindingsRemoved",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true(
+        "native renderer exposes only command-buffer drawing",
+        JS_ToBool(ctx, legacy_draw_bindings_removed));
+    JS_FreeValue(ctx, legacy_draw_bindings_removed);
 }
 
 static void test_development_resource_path(JSContext *ctx)
@@ -234,12 +238,12 @@ static void test_invalid_binding_arguments(JSContext *ctx)
 {
     JSValue module = eval_js(
         ctx,
-        "import { createWindow, drawRect, loadAudio, loadFont, loadTextTexture, "
+        "import { createWindow, loadAudio, loadFont, loadTextTexture, "
         "releaseTexture, submitCommandBuffer } from 'sdl3';"
         "globalThis.invalidArgumentsSafe = (() => {"
         "  let createWindowThrows = false;"
         "  try { createWindow(); } catch (_) { createWindowThrows = true; }"
-        "  drawRect(); releaseTexture();"
+        "  releaseTexture();"
         "  submitCommandBuffer({ commands: new Int32Array([1]), "
         "    floatBuffer: new Float32Array(), uintBuffer: new Uint32Array(), "
         "    shortBuffer: new Uint16Array() });"
