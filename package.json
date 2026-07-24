@@ -3,6 +3,7 @@
     "init": "cmake -S . -B build",
     "build": "vite build",
     "predev": "cmake --build build --target sdl3js --parallel",
-    "dev": "vite build --watch"
+    "dev": "vite build --watch",
+    "icons": "bun scripts/generate-icons.ts"
   }
 }
