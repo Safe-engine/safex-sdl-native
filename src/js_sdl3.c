@@ -3227,8 +3227,13 @@ static JSValue js_submitCommandBuffer(
         {
           if (reserve_input_mesh(v_count, i_count))
           {
+            const float alpha = (float)(a / 255.0);
+            const float rgb_multiplier = g_textures[id].pma ? alpha : 1.0f;
             SDL_FColor color = {
-                (float)(r / 255.0), (float)(g / 255.0), (float)(b / 255.0), (float)(a / 255.0)};
+                (float)(r / 255.0) * rgb_multiplier,
+                (float)(g / 255.0) * rgb_multiplier,
+                (float)(b / 255.0) * rgb_multiplier,
+                alpha};
             for (int i = 0; i < v_count; i++)
             {
               double x = pos_ptr[i * 2] * sx;
