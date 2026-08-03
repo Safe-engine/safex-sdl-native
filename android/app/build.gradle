@@ -11,6 +11,10 @@ if (keystorePropertiesFile.exists()) {
 def generatedAssets = layout.buildDirectory.dir("generated/gameAssets")
 def nativeProjectDir = rootProject.projectDir.parentFile
 def gameProjectDir = nativeProjectDir.parentFile
+def safexRoot = System.getenv("SAFEX_ROOT")
+if (!safexRoot) {
+    throw new GradleException("SAFEX_ROOT is required. Run Gradle through the safex CLI.")
+}
 def syncGameAssets = tasks.register("syncGameAssets", Sync) {
     from(nativeProjectDir) {
         include "dist/**"
@@ -78,7 +82,7 @@ android {
         main {
             assets.srcDir(generatedAssets.get().asFile)
             java.srcDirs += [
-                "../../third_party/SDL/android-project/app/src/main/java"
+                "$safexRoot/third_party/SDL/android-project/app/src/main/java"
             ]
         }
     }

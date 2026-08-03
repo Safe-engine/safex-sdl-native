@@ -1,44 +1,29 @@
 ### Install on macOS (Homebrew)
 
 ```bash
-brew install sdl3 sdl3_image freetype box2d quickjs-ng
+sh scripts/setup-mac.sh
 ```
 
 ### Install on Windows (vcpkg)
 
 ```powershell
-vcpkg install sdl3 sdl3-image freetype box2d quickjs-ng --triplet x64-windows
-# Then pass: -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+./scripts/setup-win.bat
+```
+
+## Native builds
+
+Run the commands in this section from the `native/` directory. Native builds
+compile SDL3, SDL3_image, FreeType, QuickJS, and Box2D from source, so fetch
+those dependencies before the first Android or iOS build:
+
+```bash
+./scripts/bootstrap-native-deps.sh
 ```
 
 ### Build
 - `cmake -S . -B build`
 - `cmake -S . -B build -DENABLE_BOX2D=OFF`: Build without the native Box2D module:
 - `cmake --build build --parallel && ./build/sdl3js`: Run
-
-### Resolution policy
-
-`Engine.start()` accepts an optional fourth argument that controls how the
-logical game size is presented inside the actual window or browser viewport:
-
-```ts
-Engine.start('My Game', 720, 1280, 'letterbox')
-```
-
-Available policies are `letterbox` (default), `overscan`, `stretch`, and
-`integer-scale`. The active `Engine.viewport` exposes the resulting rendered
-rectangle, X/Y scale, and safe area.
-
-## Mobile builds
-
-Run the commands in this section from the `native/` directory. Mobile builds
-compile SDL3, SDL3_image, FreeType, QuickJS, and Box2D from source, so fetch
-those dependencies before the first Android or iOS build:
-
-```bash
-cd native
-./scripts/bootstrap-mobile-deps.sh
-```
 
 Build the game's web assets before packaging if `dist/` is missing or stale.
 
@@ -169,3 +154,38 @@ The archive and exported IPA are written below `ios/build/`. The default
 Regenerate the project after changing CMake configuration. Add privacy usage
 descriptions such as `NSCameraUsageDescription` to `ios/Info.plist.in` before
 adding the matching native capability.
+
+# Safex CLI
+
+Install the CLI globally with npm, then run it from a game project directory:
+
+```sh
+npm install --global safex
+```
+
+For a local checkout of this repository, install the CLI from its root instead:
+
+```sh
+npm install --global .
+```
+
+Then initialize and run the project:
+
+```sh
+safex init
+safex run dev
+safex android init
+safex android run
+# or
+safex ios init
+safex ios run
+```
+
+`safex init` creates `native/CMakeLists.txt`. The generated CMake project uses
+the `SAFEX_ROOT` environment variable for Safex native sources and third-party
+dependencies. Platform templates are copied into `native/android` and
+`native/ios`; existing directories are never overwritten. The CLI supplies
+`SAFEX_ROOT` when it builds or runs a platform project.
+
+`safex run dev` configures `native/CMakeLists.txt` in `build`, builds `sdl3js`
+in parallel, then runs `./build/sdl3js`.

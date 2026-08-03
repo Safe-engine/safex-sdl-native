@@ -1,4 +1,8 @@
 {
+  "name": "safex",
+  "bin": {
+    "safex": "bin/safex.mjs"
+  },
   "scripts": {
     "init": "cmake -S . -B build",
     "build": "vite build",
