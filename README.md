@@ -174,6 +174,8 @@ Then initialize and run the project:
 ```sh
 safex init
 safex run dev
+safex mobile init
+safex mobile icon -p ./icon
 safex android init
 safex android run
 # or
@@ -189,3 +191,8 @@ dependencies. Platform templates are copied into `native/android` and
 
 `safex run dev` configures `native/CMakeLists.txt` in `build`, builds `sdl3js`
 in parallel, then runs `./build/sdl3js`.
+
+`safex mobile init` copies both `android/` and `ios/` templates into the
+current directory. To generate launcher icons from a 1024×1024 PNG, use
+`safex mobile icon [-p <icon-path>]`; the path defaults to `./icon`. Use
+`safex android icon` or `safex ios icon` to update only one platform.

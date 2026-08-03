@@ -83,6 +83,36 @@ function initPlatform(platform) {
     console.log(`Created native/${platform}/`);
 }
 
+function initMobile() {
+    const platforms = ['android', 'ios'];
+    const existing = platforms.find((platform) => existsSync(join(projectRoot, platform)));
+    if (existing) {
+        fail(`${existing}/ already exists; refusing to overwrite it.`);
+    }
+
+    for (const platform of platforms) {
+        cpSync(join(safexRoot, platform), join(projectRoot, platform), {
+            recursive: true,
+            preserveTimestamps: true,
+        });
+    }
+    console.log('Created android/ and ios/.');
+}
+
+function iconPath(options) {
+    if (options.length === 0) return resolve(projectRoot, 'icon');
+    if (options.length === 2 && options[0] === '-p') return resolve(projectRoot, options[1]);
+    fail('icon expects an optional path: safex <mobile|android|ios> icon [-p <icon-path>]');
+}
+
+function generateIcons(platforms, options) {
+    run('bun', [
+        join(safexRoot, 'scripts', 'generate-icons.ts'),
+        '--source', iconPath(options),
+        '--platform', platforms,
+    ]);
+}
+
 function buildGame() {
     run('bun', ['run', 'build']);
 }
@@ -149,13 +179,16 @@ function runIos() {
     run('xcrun', ['simctl', 'launch', '--terminate-running-process', device.udid, 'com.safeengine.jssdl']);
 }
 
-const [platform, action] = process.argv.slice(2);
+const [platform, action, ...options] = process.argv.slice(2);
 if (platform === 'init' && !action) initNative();
 else if ((platform === 'android' || platform === 'ios') && action === 'init') initPlatform(platform);
+else if (platform === 'mobile' && action === 'init' && options.length === 0) initMobile();
+else if (platform === 'mobile' && action === 'icon') generateIcons('all', options);
+else if ((platform === 'android' || platform === 'ios') && action === 'icon') generateIcons(platform, options);
 else if (platform === 'android' && action === 'run') runAndroid();
 else if (platform === 'ios' && action === 'run') runIos();
 else if (platform === 'run' && action === 'dev') runDev();
 else {
-    console.log('Usage: safex init | safex run dev | safex <android|ios> <init|run>');
+    console.log('Usage: safex init | safex run dev | safex mobile init | safex <mobile|android|ios> icon [-p <icon-path>] | safex <android|ios> <init|run>');
     process.exitCode = 1;
 }
