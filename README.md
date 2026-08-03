@@ -13,7 +13,7 @@ sh scripts/setup-mac.sh
 ## Native builds
 
 Run the commands in this section from the `native/` directory. Native builds
-compile SDL3, SDL3_image, FreeType, QuickJS, and Box2D from source, so fetch
+compile SDL3, SDL3_image, FreeType, Hermes, and Box2D from source, so fetch
 those dependencies before the first Android or iOS build:
 
 ```bash

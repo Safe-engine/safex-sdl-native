@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(SDL3Game VERSION 1.0.0 LANGUAGES C)
+project(SDL3Game VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CTest)
 
@@ -15,7 +17,7 @@ if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
 endif()
 
 if(JS_SDL_USE_VENDORED)
-    set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype quickjs)
+    set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype hermes)
     if(ENABLE_BOX2D)
         list(APPEND JS_SDL_VENDORED_DEPENDENCIES box2d)
     endif()
@@ -67,12 +69,24 @@ if(JS_SDL_USE_VENDORED)
     add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
     add_subdirectory(third_party/SDL_image EXCLUDE_FROM_ALL)
     add_subdirectory(third_party/freetype EXCLUDE_FROM_ALL)
-    add_subdirectory(third_party/quickjs EXCLUDE_FROM_ALL)
+    # Hermes generates internal bytecode during the build, which requires its
+    # host compiler even when the command-line tools are not installed.
+    set(HERMES_ENABLE_TOOLS ON CACHE BOOL "" FORCE)
+    set(HERMES_ENABLE_TEST_SUITE OFF CACHE BOOL "" FORCE)
+    set(HERMES_ENABLE_NAPI OFF CACHE BOOL "" FORCE)
+    set(HERMES_ENABLE_CORE_EXTENSIONS OFF CACHE BOOL "" FORCE)
+    if(ANDROID)
+        set(HERMES_IS_ANDROID ON CACHE BOOL "" FORCE)
+    endif()
+    if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
+    endif()
+    add_subdirectory(third_party/hermes EXCLUDE_FROM_ALL)
 else()
     find_package(SDL3 REQUIRED)
     find_package(SDL3_image REQUIRED)
     find_package(Freetype REQUIRED)
-    find_package(qjs REQUIRED)
+    find_package(Hermes REQUIRED)
     if(ENABLE_BOX2D AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/box2d/CMakeLists.txt")
         find_package(box2d QUIET)
     endif()
@@ -91,6 +105,7 @@ endif()
 
 set(JS_SDL_SOURCES
     src/main.c
+    src/js_runtime.cpp
     src/js_sdl3.c
 )
 
@@ -119,18 +134,16 @@ if(NOT ANDROID)
     set(JS_SDL_TARGET sdl3js)
 endif()
 
-set(QUICKJS_TARGET qjs)
-if(TARGET qjs::qjs)
-    set(QUICKJS_TARGET qjs::qjs)
-elseif(TARGET quickjs)
-    set(QUICKJS_TARGET quickjs)
+set(HERMES_TARGET hermesvm_a)
+if(TARGET Hermes::hermesvm_a)
+    set(HERMES_TARGET Hermes::hermesvm_a)
+elseif(TARGET hermesvm_a)
+    set(HERMES_TARGET hermesvm_a)
 endif()
 
 if(ANDROID)
-    # QuickJS-NG deliberately uses -O0 for Debug builds. That makes interpreted
-    # animation workloads unusably slow on 32-bit ARM devices, so keep debug
-    # symbols while optimizing the runtime and the native JS bridge.
-    target_compile_options(qjs PRIVATE $<$<CONFIG:Debug>:-O2>)
+    # Keep debug symbols while optimizing the runtime and native bridge for
+    # interpreted animation workloads on 32-bit ARM devices.
     target_compile_options(${JS_SDL_TARGET} PRIVATE $<$<CONFIG:Debug>:-O2>)
 endif()
 
@@ -140,7 +153,7 @@ target_link_libraries(
         SDL3::SDL3
         SDL3_image::SDL3_image
         ${FREETYPE_TARGET}
-        ${QUICKJS_TARGET}
+        ${HERMES_TARGET}
 )
 
 target_compile_definitions(${JS_SDL_TARGET} PRIVATE
@@ -181,6 +194,7 @@ endif()
 if(BUILD_TESTING)
     set(JS_SDL_TEST_SOURCES
         tests/native_binding_tests.c
+        src/js_runtime.cpp
         src/js_sdl3.c
     )
     if(ENABLE_BOX2D)
@@ -195,7 +209,7 @@ if(BUILD_TESTING)
             SDL3::SDL3
             SDL3_image::SDL3_image
             ${FREETYPE_TARGET}
-            ${QUICKJS_TARGET}
+            ${HERMES_TARGET}
     )
     if(BOX2D_TARGET)
         target_link_libraries(js_sdl3_native_tests PRIVATE ${BOX2D_TARGET})

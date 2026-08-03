@@ -61,21 +61,25 @@ function runSdl3jsPlugin() {
   }
 }
 
-// Vite lib-mode produces a single ESM bundle compatible with QuickJS-NG.
-// Native modules are external — resolved at runtime by the C host.
+// Vite lib-mode produces a single ESM bundle for Hermes. Native modules are
+// resolved to small shims backed by the host's global module table.
 export default defineConfig({
+  resolve: {
+    alias: {
+      sdl3: path.resolve(__dirname, 'runtime-modules/sdl3.js'),
+      box2d: path.resolve(__dirname, 'runtime-modules/box2d.js'),
+    },
+  },
   build: {
     lib: {
       entry: path.resolve(__dirname, '../src/main.ts'),
-      formats: ['es'],
+      formats: ['iife'],
+      name: 'SafexGame',
       fileName: () => 'main.js',
     },
     outDir: path.resolve(__dirname, 'dist'),
     target: 'esnext',
     minify: false,
-    rollupOptions: {
-      external: ['sdl3', 'box2d'],
-    },
   },
   plugins: [runSdl3jsPlugin(), safexTransform()],
 })

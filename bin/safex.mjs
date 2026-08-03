@@ -47,12 +47,14 @@ function initNative() {
         .replaceAll('add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/SDL" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL" EXCLUDE_FROM_ALL)')
         .replaceAll('add_subdirectory(third_party/SDL_image EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/SDL_image" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL_image" EXCLUDE_FROM_ALL)')
         .replaceAll('add_subdirectory(third_party/freetype EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/freetype" "${CMAKE_CURRENT_BINARY_DIR}/third_party/freetype" EXCLUDE_FROM_ALL)')
-        .replaceAll('add_subdirectory(third_party/quickjs EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/third_party/quickjs" EXCLUDE_FROM_ALL)')
+        .replaceAll('add_subdirectory(third_party/hermes EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/hermes" "${CMAKE_CURRENT_BINARY_DIR}/third_party/hermes" EXCLUDE_FROM_ALL)')
         .replaceAll('add_subdirectory(third_party/box2d EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/box2d" "${CMAKE_CURRENT_BINARY_DIR}/third_party/box2d" EXCLUDE_FROM_ALL)')
         .replaceAll('    src/main.c', '    ${SAFEX_ROOT}/src/main.c')
+        .replaceAll('    src/js_runtime.cpp', '    ${SAFEX_ROOT}/src/js_runtime.cpp')
         .replaceAll('    src/js_sdl3.c', '    ${SAFEX_ROOT}/src/js_sdl3.c')
         .replaceAll('list(APPEND JS_SDL_SOURCES src/js_box2d.c)', 'list(APPEND JS_SDL_SOURCES ${SAFEX_ROOT}/src/js_box2d.c)')
         .replaceAll('        tests/native_binding_tests.c', '        ${SAFEX_ROOT}/tests/native_binding_tests.c')
+        .replaceAll('        src/js_runtime.cpp', '        ${SAFEX_ROOT}/src/js_runtime.cpp')
         .replaceAll('        src/js_sdl3.c', '        ${SAFEX_ROOT}/src/js_sdl3.c')
         .replaceAll('list(APPEND JS_SDL_TEST_SOURCES src/js_box2d.c)', 'list(APPEND JS_SDL_TEST_SOURCES ${SAFEX_ROOT}/src/js_box2d.c)')
         .replaceAll('target_include_directories(js_sdl3_native_tests PRIVATE src)', 'target_include_directories(js_sdl3_native_tests PRIVATE ${SAFEX_ROOT}/src)');
@@ -68,6 +70,7 @@ function initNative() {
     writeFileSync(join(nativeRoot, 'CMakeLists.txt'), configuredCmake);
     cpSync(join(safexRoot, '.gitignore'), join(nativeRoot, '.gitignore'));
     cpSync(join(safexRoot, 'vite.config.ts'), join(nativeRoot, 'vite.config.ts'));
+    cpSync(join(safexRoot, 'runtime-modules'), join(nativeRoot, 'runtime-modules'), { recursive: true });
     console.log('Created native template files. Run: safex <android|ios> init');
 }
 

@@ -6,8 +6,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-#include <quickjs.h>
-
 #include "js_sdl3.h"
 
 #define MAX_QUEUED_EVENTS 128
@@ -212,42 +210,22 @@ static bool evaluate_bundle(JSContext *ctx)
     SDL_free(bundle_path);
     SDL_free(development_bundle_path);
 
-    JSValue module = JS_Eval(
+    JSValue result = JS_Eval(
         ctx,
         contents,
         length,
         "dist/main.js",
-        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        JS_EVAL_TYPE_GLOBAL);
     SDL_free(contents);
 
-    if (JS_IsException(module)) {
-        print_js_exception(ctx);
-        JS_FreeValue(ctx, module);
-        return false;
-    }
-
-    if (JS_ResolveModule(ctx, module) < 0) {
-        print_js_exception(ctx);
-        JS_FreeValue(ctx, module);
-        return false;
-    }
-
-    JSValue result = JS_EvalFunction(ctx, module);
     if (JS_IsException(result)) {
         print_js_exception(ctx);
         JS_FreeValue(ctx, result);
         return false;
     }
-    SDL_Log("JavaScript module execution returned tag %d", JS_VALUE_GET_TAG(result));
+
+    SDL_Log("JavaScript bundle executed");
     js_execute_pending_job(JS_GetRuntime(ctx));
-    JSPromiseStateEnum promise_state = JS_PromiseState(ctx, result);
-    SDL_Log("JavaScript module promise state %d", promise_state);
-    if (promise_state == JS_PROMISE_REJECTED) {
-        JS_Throw(ctx, JS_PromiseResult(ctx, result));
-        print_js_exception(ctx);
-        JS_FreeValue(ctx, result);
-        return false;
-    }
     JS_FreeValue(ctx, result);
     SDL_Log("JavaScript bundle initialized");
     return true;

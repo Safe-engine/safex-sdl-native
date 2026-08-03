@@ -29,9 +29,9 @@ clone_dependency SDL_image \
 clone_dependency freetype \
     https://github.com/freetype/freetype.git \
     "${FREETYPE_REVISION:-master}"
-clone_dependency quickjs \
-    https://github.com/quickjs-ng/quickjs.git \
-    "${QUICKJS_REVISION:-master}"
+clone_dependency hermes \
+    https://github.com/facebook/hermes.git \
+    "${HERMES_REVISION:-main}"
 clone_dependency box2d \
     https://github.com/erincatto/box2d.git \
     "${BOX2D_REVISION:-main}"

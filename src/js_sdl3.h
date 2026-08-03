@@ -1,6 +1,6 @@
 #pragma once
 
-#include <quickjs.h>
+#include "js_runtime.h"
 #include <SDL3/SDL.h>
 
 typedef void (*js_main_thread_fn)(void *arg);

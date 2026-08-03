@@ -3,8 +3,6 @@
 #include <string.h>
 
 #include <SDL3/SDL.h>
-#include <quickjs.h>
-
 #include "js_sdl3.h"
 
 void js_run_on_main_thread(js_main_thread_fn fn, void *arg)
@@ -264,37 +262,25 @@ static void test_invalid_binding_arguments(JSContext *ctx)
 
 static void test_async_await(JSContext *ctx)
 {
-    const char *module_source =
-        "globalThis.topLevelAwaitValue = await Promise.resolve('ready');";
-    JSValue module = JS_Eval(
+    JSValue setup = eval_js(
         ctx,
-        module_source,
-        strlen(module_source),
-        "native-async-await-test.mjs",
-        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
-    expect_true("top-level await module compiles", !JS_IsException(module));
-    if (JS_IsException(module)) {
+        "globalThis.topLevelAwaitValue = 'pending';"
+        "Promise.resolve('ready').then((value) => { globalThis.topLevelAwaitValue = value; });",
+        JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(setup)) {
         print_exception(ctx);
-        JS_FreeValue(ctx, module);
+        JS_FreeValue(ctx, setup);
         return;
     }
-
-    expect_int("top-level await module resolves", JS_ResolveModule(ctx, module), 0);
-    JSValue result = JS_EvalFunction(ctx, module);
-    expect_true("top-level await returns a promise", JS_IsObject(result));
+    JS_FreeValue(ctx, setup);
     js_execute_pending_job(JS_GetRuntime(ctx));
-    expect_int(
-        "top-level await promise is fulfilled",
-        JS_PromiseState(ctx, result),
-        JS_PROMISE_FULFILLED);
-    JS_FreeValue(ctx, result);
 
     JSValue value = eval_js(
         ctx,
         "globalThis.topLevelAwaitValue",
         JS_EVAL_TYPE_GLOBAL);
     const char *value_string = JS_ToCString(ctx, value);
-    expect_string("top-level await resumes", value_string, "ready");
+    expect_string("Hermes drains promise microtasks", value_string, "ready");
     JS_FreeCString(ctx, value_string);
     JS_FreeValue(ctx, value);
 
@@ -447,7 +433,7 @@ int main(void)
     JSRuntime *runtime = JS_NewRuntime();
     JSContext *ctx = runtime ? JS_NewContext(runtime) : NULL;
     if (!runtime || !ctx) {
-        fprintf(stderr, "Failed to create QuickJS runtime\n");
+        fprintf(stderr, "Failed to create Hermes runtime\n");
         if (ctx) JS_FreeContext(ctx);
         if (runtime) JS_FreeRuntime(runtime);
         SDL_Quit();
