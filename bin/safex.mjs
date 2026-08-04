@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -100,7 +100,14 @@ function initMobile() {
 }
 
 function iconPath(options) {
-    if (options.length === 0) return resolve(projectRoot, 'icon');
+    if (options.length === 0) {
+        const files = readdirSync(projectRoot, { withFileTypes: true });
+        for (const name of ['icon.png', 'icon.jpg', 'icon.jpeg']) {
+            const icon = files.find((file) => file.isFile() && file.name.toLowerCase() === name);
+            if (icon) return resolve(projectRoot, icon.name);
+        }
+        return resolve(projectRoot, 'icon');
+    }
     if (options.length === 2 && options[0] === '-p') return resolve(projectRoot, options[1]);
     fail('icon expects an optional path: safex <mobile|android|ios> icon [-p <icon-path>]');
 }
@@ -110,6 +117,7 @@ function generateIcons(platforms, options) {
         join(safexRoot, 'scripts', 'generate-icons.ts'),
         '--source', iconPath(options),
         '--platform', platforms,
+        '--output', nativeRoot,
     ]);
 }
 

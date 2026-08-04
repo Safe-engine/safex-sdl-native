@@ -193,6 +193,8 @@ dependencies. Platform templates are copied into `native/android` and
 in parallel, then runs `./build/sdl3js`.
 
 `safex mobile init` copies both `android/` and `ios/` templates into the
-current directory. To generate launcher icons from a 1024×1024 PNG, use
-`safex mobile icon [-p <icon-path>]`; the path defaults to `./icon`. Use
-`safex android icon` or `safex ios icon` to update only one platform.
+current directory. To generate launcher icons from a 1024×1024 PNG or JPEG,
+use `safex mobile icon [-p <icon-path>]`; without `-p`, it uses `icon.png`,
+`icon.jpg`, or `icon.jpeg` in the current directory, ignoring filename case.
+Generated files are written beneath `native/`. Use `safex android icon` or
+`safex ios icon` to update only one platform.
