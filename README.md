@@ -1,24 +1,16 @@
-### Install on macOS (Homebrew)
+## Safex setup
+
+From the repository root, use Bun to download the native dependencies and set
+`SAFEX_ROOT` for the current operating system:
 
 ```bash
-sh scripts/setup-mac.sh
+bun run scripts/setup-safex.ts
 ```
 
-### Install on Windows (vcpkg)
-
-```powershell
-./scripts/setup-win.bat
-```
-
-## Native builds
-
-Run the commands in this section from the `native/` directory. Native builds
-compile SDL3, SDL3_image, FreeType, QuickJS, and Box2D from source, so fetch
-those dependencies before the first Android or iOS build:
-
-```bash
-./scripts/bootstrap-native-deps.sh
-```
+On macOS, the command adds `SAFEX_ROOT` to `~/.zshrc` (or `~/.bash_profile`).
+On Linux, it uses `~/.zshrc`, `~/.bashrc`, or `~/.profile` according to the
+active shell. On Windows, it persists the variable with `setx`. Open a new
+terminal after it finishes. The command supports macOS, Linux, and Windows.
 
 ### Build
 - `cmake -S . -B build`
