@@ -125,7 +125,7 @@ function generateIcons(platforms, options) {
 }
 
 function buildGame() {
-    run('bun', ['run', 'build']);
+    run('bun', ['run', 'vite', 'build', '--config', 'native/vite.config.ts']);
 }
 
 function androidGradleRoot() {
