@@ -7,6 +7,9 @@ def keystorePropertiesFile = rootProject.file("keystore.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
+def signingProperty = { String name ->
+    project.findProperty("safex${name}") ?: keystoreProperties[name]
+}
 
 def generatedAssets = layout.buildDirectory.dir("generated/gameAssets")
 def nativeProjectDir = rootProject.projectDir.parentFile
@@ -47,11 +50,12 @@ android {
 
     signingConfigs {
         release {
-            if (keystorePropertiesFile.exists()) {
-                storeFile file(keystoreProperties["storeFile"])
-                storePassword keystoreProperties["storePassword"]
-                keyAlias keystoreProperties["keyAlias"]
-                keyPassword keystoreProperties["keyPassword"]
+            def storeFilePath = signingProperty("StoreFile")
+            if (storeFilePath) {
+                storeFile file(storeFilePath)
+                storePassword signingProperty("StorePassword")
+                keyAlias signingProperty("KeyAlias")
+                keyPassword signingProperty("KeyPassword")
             }
         }
     }
@@ -65,7 +69,7 @@ android {
         release {
             minifyEnabled false
             shrinkResources false
-            if (keystorePropertiesFile.exists()) {
+            if (signingProperty("StoreFile")) {
                 signingConfig signingConfigs.release
             }
         }

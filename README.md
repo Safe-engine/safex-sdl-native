@@ -20,21 +20,26 @@ Install the CLI local checkout of this repository, install the CLI from its root
 npm install --global .
 ```
 
-Then initialize and run the project:
+Quick run:
+```sh
+safex run dev
+safex android run
+safex ios run
+```
+Then initialize and tool the project:
 
 ```sh
-# desktop
+# init
 safex init
-safex run dev
-# mobile
-safex mobile init
-safex mobile icon -p ./icon
-# android
-safex android init
-safex android run
-# ios
 safex ios init
-safex ios run
+safex android init
+safex mobile init
+# create mobile icons
+safex mobile icon -p ./icon
+# build
+safex android build apk debug
+safex android build aab release --keystore ./release.keystore --key-alias upload --sign-pass '<password>'
+safex ios build --team ABCDE12345
 ```
 
 `safex init` creates `native/CMakeLists.txt`. The generated CMake project uses
@@ -114,6 +119,20 @@ Then build with the wrapper:
 
 The packages are written under `android/app/build/outputs/`.
 
+From a Safex game project, the CLI builds an APK or AAB directly. For a signed
+release package, provide the keystore, alias, and either one shared signing
+password (`--sign-pass`) or separate `--store-password` and `--key-password`
+arguments. Passwords are passed to Gradle as environment properties and are not
+written to disk:
+
+```bash
+safex android build aab release \
+  --keystore ./release.keystore \
+  --key-alias upload \
+  --store-password '<keystore-password>' \
+  --key-password '<key-password>'
+```
+
 ### Android Studio
 
 1. Run `./scripts/bootstrap-mobile-deps.sh` once.
@@ -168,6 +187,16 @@ DEVELOPMENT_TEAM=ABCDE12345 ./scripts/package-ios.sh
 The archive and exported IPA are written below `ios/build/`. The default
 `ios/ExportOptions.plist` targets App Store Connect; change its `method` to
 `ad-hoc` or `development` when appropriate.
+
+Build an IPA from a Safex game project with:
+
+```bash
+safex ios build --team ABCDE12345
+```
+
+iOS signing uses the signing certificate and provisioning profile installed in
+the macOS keychain; Xcode does not accept a certificate password as an IPA
+build argument.
 
 ### Xcode
 

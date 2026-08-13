@@ -18,7 +18,7 @@ function fail(message) {
 function run(command, args, options = {}) {
     const result = spawnSync(command, args, {
         cwd: options.cwd ?? projectRoot,
-        env: { ...process.env, SAFEX_ROOT: safexRoot },
+        env: { ...process.env, SAFEX_ROOT: safexRoot, ...options.env },
         stdio: 'inherit',
     });
 
@@ -128,8 +128,13 @@ function buildGame() {
     run('bun', ['run', 'build']);
 }
 
+function syncResources() {
+    run('bun', ['run', 'sync-res']);
+}
+
 function runDev() {
     initNativeIfMissing();
+    syncResources();
     run('cmake', ['-S', '.', '-B', 'build'], { cwd: 'native' });
     run('cmake', ['--build', 'build', '--parallel'], { cwd: 'native' });
     run('bun', ['run', 'vite', 'build', '--watch', '--config', 'native/vite.config.ts']);
@@ -137,7 +142,7 @@ function runDev() {
 
 function runAndroid() {
     initPlatformIfMissing('android');
-
+    syncResources();
     buildGame();
     run('./gradlew', ['--no-daemon', 'installDebug'], { cwd: join(nativeRoot, 'android') });
     run('adb', ['shell', 'monkey', '-p', 'com.safeengine.jssdl.debug', '1']);
@@ -145,7 +150,7 @@ function runAndroid() {
 
 function runIos() {
     initPlatformIfMissing('ios');
-
+    syncResources();
     buildGame();
     const deviceJson = spawnSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
         encoding: 'utf8',
@@ -184,6 +189,87 @@ function runIos() {
     run('xcrun', ['simctl', 'launch', '--terminate-running-process', device.udid, 'com.safeengine.jssdl']);
 }
 
+function optionValues(options, usage) {
+    const values = new Map();
+    for (let index = 0; index < options.length; index += 2) {
+        const option = options[index];
+        const value = options[index + 1];
+        if (!option?.startsWith('--') || value === undefined || values.has(option)) fail(usage);
+        values.set(option, value);
+    }
+    return values;
+}
+
+function buildAndroid(options) {
+    const usage = 'Usage: safex android build [apk|aab] [debug|release] [--keystore <path> --key-alias <alias> (--sign-pass <password> | --store-password <password> --key-password <password>)]';
+    let format = 'aab';
+    let variant = 'release';
+    const positional = [];
+    let flagIndex = options.findIndex((option) => option.startsWith('--'));
+    if (flagIndex === -1) flagIndex = options.length;
+    positional.push(...options.slice(0, flagIndex));
+    if (positional.length > 2) fail(usage);
+    [format = format, variant = variant] = positional;
+    if (!['apk', 'aab'].includes(format) || !['debug', 'release'].includes(variant)) fail(usage);
+
+    const signing = optionValues(options.slice(flagIndex), usage);
+    const allowed = new Set(['--keystore', '--key-alias', '--sign-pass', '--store-password', '--key-password']);
+    if ([...signing.keys()].some((option) => !allowed.has(option))) fail(usage);
+    if (signing.has('--sign-pass') && (signing.has('--store-password') || signing.has('--key-password'))) fail(usage);
+
+    const signingValues = signing.size === 0 ? undefined : {
+        keystore: signing.get('--keystore'),
+        keyAlias: signing.get('--key-alias'),
+        storePassword: signing.get('--store-password') ?? signing.get('--sign-pass'),
+        keyPassword: signing.get('--key-password') ?? signing.get('--sign-pass'),
+    };
+    if (signingValues && Object.values(signingValues).some((value) => !value)) fail(usage);
+
+    initPlatformIfMissing('android');
+    syncResources();
+    buildGame();
+    const task = `${format === 'apk' ? 'assemble' : 'bundle'}${variant[0].toUpperCase()}${variant.slice(1)}`;
+    const env = signingValues ? {
+        ORG_GRADLE_PROJECT_safexStoreFile: resolve(projectRoot, signingValues.keystore),
+        ORG_GRADLE_PROJECT_safexStorePassword: signingValues.storePassword,
+        ORG_GRADLE_PROJECT_safexKeyAlias: signingValues.keyAlias,
+        ORG_GRADLE_PROJECT_safexKeyPassword: signingValues.keyPassword,
+    } : undefined;
+    run('./gradlew', ['--no-daemon', task], { cwd: join(nativeRoot, 'android'), env });
+    console.log(`Android ${format.toUpperCase()}: native/android/app/build/outputs/`);
+}
+
+function buildIos(options) {
+    const usage = 'Usage: safex ios build --team <Apple Developer team ID>';
+    const signing = optionValues(options, usage);
+    if (signing.size !== 1 || !signing.has('--team')) fail(usage);
+
+    initPlatformIfMissing('ios');
+    syncResources();
+    buildGame();
+    const iosRoot = join(nativeRoot, 'ios');
+    const buildRoot = join(iosRoot, 'xcode');
+    const archive = join(iosRoot, 'build', 'JSSDL.xcarchive');
+    const exportDir = join(iosRoot, 'build', 'export');
+    const team = signing.get('--team');
+    run('cmake', [
+        '-S', nativeRoot, '-B', buildRoot, '-G', 'Xcode',
+        '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_ARCHITECTURES=arm64',
+        '-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0', '-DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO',
+        `-DJS_SDL_DEVELOPMENT_TEAM=${team}`,
+    ]);
+    run('xcodebuild', [
+        '-project', join(buildRoot, 'SDL3Game.xcodeproj'), '-scheme', 'sdl3js',
+        '-configuration', 'Release', '-destination', 'generic/platform=iOS',
+        '-archivePath', archive, `DEVELOPMENT_TEAM=${team}`, '-allowProvisioningUpdates', 'archive',
+    ]);
+    run('xcodebuild', [
+        '-exportArchive', '-archivePath', archive, '-exportPath', exportDir,
+        '-exportOptionsPlist', join(iosRoot, 'ExportOptions.plist'), '-allowProvisioningUpdates',
+    ]);
+    console.log(`iOS IPA: ${join('native', 'ios', 'build', 'export')}`);
+}
+
 const [platform, action, ...options] = process.argv.slice(2);
 if (platform === 'init' && !action) initNative();
 else if ((platform === 'android' || platform === 'ios') && action === 'init') initPlatform(platform);
@@ -192,8 +278,10 @@ else if (platform === 'mobile' && action === 'icon') generateIcons('all', option
 else if ((platform === 'android' || platform === 'ios') && action === 'icon') generateIcons(platform, options);
 else if (platform === 'android' && action === 'run') runAndroid();
 else if (platform === 'ios' && action === 'run') runIos();
+else if (platform === 'android' && action === 'build') buildAndroid(options);
+else if (platform === 'ios' && action === 'build') buildIos(options);
 else if (platform === 'run' && action === 'dev') runDev();
 else {
-    console.log('Usage: safex init | safex run dev | safex mobile init | safex <mobile|android|ios> icon [-p <icon-path>] | safex <android|ios> <init|run>');
+    console.log('Usage: safex init | safex run dev | safex mobile init | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <init|run|build> | safex ios <init|run|build>');
     process.exitCode = 1;
 }
