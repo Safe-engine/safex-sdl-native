@@ -12,6 +12,47 @@ On Linux, it uses `~/.zshrc`, `~/.bashrc`, or `~/.profile` according to the
 active shell. On Windows, it persists the variable with `setx`. Open a new
 terminal after it finishes. The command supports macOS, Linux, and Windows.
 
+# Safex CLI
+
+Install the CLI local checkout of this repository, install the CLI from its root instead:
+
+```sh
+npm install --global .
+```
+
+Then initialize and run the project:
+
+```sh
+# desktop
+safex init
+safex run dev
+# mobile
+safex mobile init
+safex mobile icon -p ./icon
+# android
+safex android init
+safex android run
+# ios
+safex ios init
+safex ios run
+```
+
+`safex init` creates `native/CMakeLists.txt`. The generated CMake project uses
+the `SAFEX_ROOT` environment variable for Safex native sources and third-party
+dependencies. Platform templates are copied into `native/android` and
+`native/ios`; existing directories are never overwritten. The CLI supplies
+`SAFEX_ROOT` when it builds or runs a platform project.
+
+`safex run dev` configures `native/CMakeLists.txt` in `build`, builds `sdl3js`
+in parallel, then runs `./build/sdl3js`.
+
+`safex mobile init` copies both `android/` and `ios/` templates into the
+current directory. To generate launcher icons from a 1024×1024 PNG or JPEG,
+use `safex mobile icon [-p <icon-path>]`; without `-p`, it uses `icon.png`,
+`icon.jpg`, or `icon.jpeg` in the current directory, ignoring filename case.
+Generated files are written beneath `native/`. Use `safex android icon` or
+`safex ios icon` to update only one platform.
+
 ### Build
 - `cmake -S . -B build`
 - `cmake -S . -B build -DENABLE_BOX2D=OFF`: Build without the native Box2D module:
@@ -146,47 +187,3 @@ The archive and exported IPA are written below `ios/build/`. The default
 Regenerate the project after changing CMake configuration. Add privacy usage
 descriptions such as `NSCameraUsageDescription` to `ios/Info.plist.in` before
 adding the matching native capability.
-
-# Safex CLI
-
-Install the CLI globally with npm, then run it from a game project directory:
-
-```sh
-npm install --global safex
-```
-
-For a local checkout of this repository, install the CLI from its root instead:
-
-```sh
-npm install --global .
-```
-
-Then initialize and run the project:
-
-```sh
-safex init
-safex run dev
-safex mobile init
-safex mobile icon -p ./icon
-safex android init
-safex android run
-# or
-safex ios init
-safex ios run
-```
-
-`safex init` creates `native/CMakeLists.txt`. The generated CMake project uses
-the `SAFEX_ROOT` environment variable for Safex native sources and third-party
-dependencies. Platform templates are copied into `native/android` and
-`native/ios`; existing directories are never overwritten. The CLI supplies
-`SAFEX_ROOT` when it builds or runs a platform project.
-
-`safex run dev` configures `native/CMakeLists.txt` in `build`, builds `sdl3js`
-in parallel, then runs `./build/sdl3js`.
-
-`safex mobile init` copies both `android/` and `ios/` templates into the
-current directory. To generate launcher icons from a 1024×1024 PNG or JPEG,
-use `safex mobile icon [-p <icon-path>]`; without `-p`, it uses `icon.png`,
-`icon.jpg`, or `icon.jpeg` in the current directory, ignoring filename case.
-Generated files are written beneath `native/`. Use `safex android icon` or
-`safex ios icon` to update only one platform.

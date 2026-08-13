@@ -30,12 +30,6 @@ function run(command, args, options = {}) {
     }
 }
 
-function requireNative() {
-    if (!existsSync(nativeRoot)) {
-        fail('native/ does not exist. Run: safex init');
-    }
-}
-
 function initNative() {
     if (existsSync(nativeRoot)) {
         fail('native/ already exists; refusing to overwrite it.');
@@ -71,8 +65,12 @@ function initNative() {
     console.log('Created native template files. Run: safex <android|ios> init');
 }
 
+function initNativeIfMissing() {
+    if (!existsSync(nativeRoot)) initNative();
+}
+
 function initPlatform(platform) {
-    requireNative();
+    initNativeIfMissing();
     const source = join(safexRoot, platform);
     const destination = join(nativeRoot, platform);
     if (existsSync(destination)) {
@@ -83,7 +81,12 @@ function initPlatform(platform) {
     console.log(`Created native/${platform}/`);
 }
 
+function initPlatformIfMissing(platform) {
+    if (!existsSync(join(nativeRoot, platform))) initPlatform(platform);
+}
+
 function initMobile() {
+    initNativeIfMissing();
     const platforms = ['android', 'ios'];
     const existing = platforms.find((platform) => existsSync(join(projectRoot, platform)));
     if (existing) {
@@ -126,17 +129,14 @@ function buildGame() {
 }
 
 function runDev() {
-    requireNative();
+    initNativeIfMissing();
     run('cmake', ['-S', '.', '-B', 'build'], { cwd: 'native' });
     run('cmake', ['--build', 'build', '--parallel'], { cwd: 'native' });
     run('bun', ['run', 'vite', 'build', '--watch', '--config', 'native/vite.config.ts']);
 }
 
 function runAndroid() {
-    requireNative();
-    if (!existsSync(join(nativeRoot, 'android'))) {
-        fail('native/android/ does not exist. Run: safex android init');
-    }
+    initPlatformIfMissing('android');
 
     buildGame();
     run('./gradlew', ['--no-daemon', 'installDebug'], { cwd: join(nativeRoot, 'android') });
@@ -144,10 +144,7 @@ function runAndroid() {
 }
 
 function runIos() {
-    requireNative();
-    if (!existsSync(join(nativeRoot, 'ios'))) {
-        fail('native/ios/ does not exist. Run: safex ios init');
-    }
+    initPlatformIfMissing('ios');
 
     buildGame();
     const deviceJson = spawnSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
