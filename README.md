@@ -26,7 +26,15 @@ safex run dev
 safex android run
 safex ios run
 ```
-Then initialize and tool the project:
+
+Build commands:
+```sh
+safex android build apk debug
+safex android build aab release --keystore ./release.keystore --key-alias upload --sign-pass '<password>'
+safex ios build --team ABCDE12345
+```
+
+Initialize and tool the project:
 
 ```sh
 # init
@@ -36,10 +44,6 @@ safex android init
 safex mobile init
 # create mobile icons
 safex mobile icon -p ./icon
-# build
-safex android build apk debug
-safex android build aab release --keystore ./release.keystore --key-alias upload --sign-pass '<password>'
-safex ios build --team ABCDE12345
 ```
 
 `safex init` creates `native/CMakeLists.txt`. The generated CMake project uses

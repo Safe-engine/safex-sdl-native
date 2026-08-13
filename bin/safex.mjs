@@ -128,6 +128,15 @@ function buildGame() {
     run('bun', ['run', 'build']);
 }
 
+function androidGradleRoot() {
+    const roots = [join(nativeRoot, 'android'), join(nativeRoot, 'android', 'android')];
+    const root = roots.find((candidate) => existsSync(join(candidate, 'gradlew')));
+    if (!root) {
+        fail('Android Gradle wrapper was not found under native/android/. Run safex android init in a project without an existing native/android/ directory.');
+    }
+    return root;
+}
+
 function syncResources() {
     run('bun', ['run', 'sync-res']);
 }
@@ -144,7 +153,7 @@ function runAndroid() {
     initPlatformIfMissing('android');
     syncResources();
     buildGame();
-    run('./gradlew', ['--no-daemon', 'installDebug'], { cwd: join(nativeRoot, 'android') });
+    run('./gradlew', ['--no-daemon', 'installDebug'], { cwd: androidGradleRoot() });
     run('adb', ['shell', 'monkey', '-p', 'com.safeengine.jssdl.debug', '1']);
 }
 
@@ -235,7 +244,7 @@ function buildAndroid(options) {
         ORG_GRADLE_PROJECT_safexKeyAlias: signingValues.keyAlias,
         ORG_GRADLE_PROJECT_safexKeyPassword: signingValues.keyPassword,
     } : undefined;
-    run('./gradlew', ['--no-daemon', task], { cwd: join(nativeRoot, 'android'), env });
+    run('./gradlew', ['--no-daemon', task], { cwd: androidGradleRoot(), env });
     console.log(`Android ${format.toUpperCase()}: native/android/app/build/outputs/`);
 }
 
