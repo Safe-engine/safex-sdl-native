@@ -17,7 +17,7 @@ terminal after it finishes. The command supports macOS, Linux, and Windows.
 Install the CLI local checkout of this repository, install the CLI from its root instead:
 
 ```sh
-npm install --global .
+bun install --global .
 ```
 
 Quick run:
