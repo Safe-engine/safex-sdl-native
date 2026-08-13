@@ -8,7 +8,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 include(CTest)
 
 option(JS_SDL_USE_VENDORED "Build mobile dependencies from third_party" OFF)
-option(ENABLE_BOX2D "Build with Box2D physics support when available" ON)
+option(ENABLE_BOX2D "Build with Box2D physics support when available" OFF)
 
 if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(JS_SDL_USE_VENDORED ON CACHE BOOL "" FORCE)

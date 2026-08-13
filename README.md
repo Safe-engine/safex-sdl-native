@@ -62,22 +62,6 @@ use `safex mobile icon [-p <icon-path>]`; without `-p`, it uses `icon.png`,
 Generated files are written beneath `native/`. Use `safex android icon` or
 `safex ios icon` to update only one platform.
 
-### Build
-- `cmake -S . -B build`
-- `cmake -S . -B build -DENABLE_BOX2D=OFF`: Build without the native Box2D module:
-- `cmake --build build --parallel && ./build/sdl3js`: Run
-
-Build the game's web assets before packaging if `dist/` is missing or stale.
-
-### App icons
-
-Replace `scripts/icon.png` with a square 1024px PNG, then generate the iOS and
-Android launcher icons with Bun:
-
-```bash
-bun run icons
-```
-
 ## Android
 
 Android requires JDK 17 or newer, Android SDK 37, Build Tools 37.0.0, NDK
