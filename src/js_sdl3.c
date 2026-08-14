@@ -1,4 +1,5 @@
 #include "js_sdl3.h"
+#include "js_native_bridge.h"
 #ifdef JS_SDL_ENABLE_BOX2D_MODULE
 #include "js_box2d.h"
 #endif
@@ -3686,6 +3687,8 @@ static const JSCFunctionListEntry funcs[] =
         JS_CFUNC_DEF("onOrientationChange", 1, js_onOrientationChange),
         JS_CFUNC_DEF("onTerminate", 1, js_onTerminate),
         JS_CFUNC_DEF("getPreferredLocales", 0, js_getPreferredLocales),
+        JS_CFUNC_DEF("callNative", 2, js_callNative),
+        JS_CFUNC_DEF("onNativeResult", 1, js_onNativeResult),
 };
 
 static int js_sdl3_init(JSContext *ctx, JSModuleDef *m)
@@ -4140,6 +4143,8 @@ void js_sdl3_shutdown(JSContext *ctx)
   g_storage_path = NULL;
   g_storage_loaded = false;
 
+  js_native_bridge_shutdown(ctx);
+
   for (int i = 0; i < MAX_TEXTURES; i++)
   {
     if (g_textures[i].texture)
@@ -4392,6 +4397,14 @@ void js_call_onInit(JSContext *ctx) { js_call_void(ctx, g_onInit); }
 void js_call_onUpdate(JSContext *ctx) { js_call_void(ctx, g_onUpdate); }
 void js_call_onUpdate_dt(JSContext *ctx, float dt)
 {
+  /*
+   * Giao kết quả từ tầng nền tảng ngay đầu frame, trên đúng thread JS.
+   *
+   * Đặt trước lệnh thoát sớm bên dưới: kết quả vẫn phải tới nơi kể cả khi game chưa gắn `onUpdate`,
+   * nếu không thì một cái promise nào đó bên JS treo mãi mà không ai biết vì sao.
+   */
+  js_native_bridge_pump(ctx);
+
   if (JS_IsUndefined(g_onUpdate))
     return;
   JSValue dt_val = JS_NewFloat64(ctx, (double)dt);
