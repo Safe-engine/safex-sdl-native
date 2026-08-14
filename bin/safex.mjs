@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -157,7 +157,16 @@ function configureAndroid(options) {
         replaceFile(gradlePath, /applicationId "[^"]+"/, `applicationId "${options.packageName}"`);
         if (activityPath && existsSync(activityPath)) {
             mkdirSync(dirname(newActivityPath), { recursive: true });
-            if (activityPath !== newActivityPath) renameSync(activityPath, newActivityPath);
+            if (activityPath !== newActivityPath) {
+                renameSync(activityPath, newActivityPath);
+                for (let directory = dirname(activityPath); directory !== javaRoot; directory = dirname(directory)) {
+                    try {
+                        rmdirSync(directory);
+                    } catch {
+                        break;
+                    }
+                }
+            }
             replaceFile(newActivityPath, /^package [^;]+;/m, `package ${options.packageName};`);
         }
         const proguardPath = join(androidRoot, 'app', 'proguard-rules.pro');
