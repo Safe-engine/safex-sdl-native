@@ -9,6 +9,8 @@ import { cwd } from 'node:process';
 const safexRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const projectRoot = process.cwd();
 const nativeRoot = join(projectRoot, 'native');
+const defaultPackageName = 'com.safex.jssdl';
+const defaultAppName = 'JS SDL';
 
 function fail(message) {
     console.error(`safex: ${message}`);
@@ -69,37 +71,100 @@ function initNativeIfMissing() {
     if (!existsSync(nativeRoot)) initNative();
 }
 
-function initPlatform(platform) {
+function initOptions(options) {
+    const usage = 'Usage: safex [ios|android|mobile] init [-p <package-name>] [-n <app-name>]';
+    const values = new Map();
+    for (let index = 0; index < options.length; index += 2) {
+        const option = options[index];
+        const value = options[index + 1];
+        if (!['-p', '-n'].includes(option) || !value || values.has(option)) fail(usage);
+        values.set(option, value);
+    }
+
+    const packageName = values.get('-p');
+    const appName = values.get('-n');
+    if (packageName && !/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(packageName)) {
+        fail('package name must be a dot-separated identifier, such as com.example.game.');
+    }
+    if (appName && /["\\\r\n<>&$;]/.test(appName)) fail('app name contains unsupported characters.');
+    return { packageName, appName };
+}
+
+function replaceFile(path, pattern, replacement) {
+    writeFileSync(path, readFileSync(path, 'utf8').replace(pattern, replacement));
+}
+
+function configureNative(options) {
+    const cmakePath = join(nativeRoot, 'CMakeLists.txt');
+    let cmake = readFileSync(cmakePath, 'utf8')
+        .replace('    MACOSX_BUNDLE_BUNDLE_NAME "JS SDL"', '    MACOSX_BUNDLE_BUNDLE_NAME "${JS_SDL_APP_NAME}"')
+        .replace('    MACOSX_BUNDLE_GUI_IDENTIFIER "com.safeengine.jssdl"', '    MACOSX_BUNDLE_GUI_IDENTIFIER "${JS_SDL_PACKAGE_NAME}"')
+        .replace('    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.safeengine.jssdl"', '    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${JS_SDL_PACKAGE_NAME}"');
+    if (!cmake.includes('set(JS_SDL_APP_NAME ')) {
+        cmake = cmake.replace('if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")', [
+            'set(JS_SDL_APP_NAME "JS SDL" CACHE STRING "Application name")',
+            'set(JS_SDL_PACKAGE_NAME "com.safeengine.jssdl" CACHE STRING "iOS bundle identifier")',
+            '',
+            'if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")',
+        ].join('\n'));
+    }
+    if (options.packageName) cmake = cmake.replace(/set\(JS_SDL_PACKAGE_NAME "[^"]*" CACHE STRING "iOS bundle identifier"\)/,
+        `set(JS_SDL_PACKAGE_NAME "${options.packageName}" CACHE STRING "iOS bundle identifier")`);
+    if (options.appName) cmake = cmake.replace(/set\(JS_SDL_APP_NAME "[^"]*" CACHE STRING "Application name"\)/,
+        `set(JS_SDL_APP_NAME "${options.appName}" CACHE STRING "Application name")`);
+    writeFileSync(cmakePath, cmake);
+
+    const plistPath = join(nativeRoot, 'ios', 'Info.plist.in');
+    if (existsSync(plistPath)) {
+        replaceFile(plistPath, /(<key>CFBundleDisplayName<\/key>\s*<string>)[^<]*(<\/string>)/,
+            '$1@JS_SDL_APP_NAME@$2');
+    }
+}
+
+function configureAndroid(options) {
+    const androidRoot = join(nativeRoot, 'android');
+    if (!existsSync(androidRoot)) return;
+    if (options.packageName) {
+        const gradlePath = join(androidRoot, 'app', 'build.gradle');
+        replaceFile(gradlePath, /namespace "[^"]+"/, `namespace "${options.packageName}"`);
+        replaceFile(gradlePath, /applicationId "[^"]+"/, `applicationId "${options.packageName}"`);
+        const activityPath = join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'safeengine', 'jssdl', 'MainActivity.java');
+        if (existsSync(activityPath)) replaceFile(activityPath, /^package [^;]+;/m, `package ${options.packageName};`);
+        const proguardPath = join(androidRoot, 'app', 'proguard-rules.pro');
+        replaceFile(proguardPath, /-keep class [^\s]+\.\*\* \{ \*; \}/, `-keep class ${options.packageName}.** { *; }`);
+    }
+    if (options.appName) {
+        replaceFile(join(androidRoot, 'app', 'src', 'main', 'res', 'values', 'strings.xml'),
+            /<string name="app_name">[^<]*<\/string>/, `<string name="app_name">${options.appName}</string>`);
+    }
+}
+
+function configurePlatforms(options, platforms) {
+    configureNative(options);
+    if (platforms.includes('android')) configureAndroid(options);
+}
+
+function initPlatform(platform, options = {}) {
     initNativeIfMissing();
     const source = join(safexRoot, platform);
     const destination = join(nativeRoot, platform);
-    if (existsSync(destination)) {
-        fail(`native/${platform}/ already exists; refusing to overwrite it.`);
+    if (!existsSync(destination)) {
+        cpSync(source, destination, { recursive: true, preserveTimestamps: true });
+        console.log(`Created native/${platform}/`);
     }
-
-    cpSync(source, destination, { recursive: true, preserveTimestamps: true });
-    console.log(`Created native/${platform}/`);
+    configurePlatforms(options, [platform]);
 }
 
 function initPlatformIfMissing(platform) {
     if (!existsSync(join(nativeRoot, platform))) initPlatform(platform);
 }
 
-function initMobile() {
+function initMobile(options = {}) {
     initNativeIfMissing();
     const platforms = ['android', 'ios'];
-    const existing = platforms.find((platform) => existsSync(join(projectRoot, platform)));
-    if (existing) {
-        fail(`${existing}/ already exists; refusing to overwrite it.`);
-    }
-
     for (const platform of platforms) {
-        cpSync(join(safexRoot, platform), join(projectRoot, platform), {
-            recursive: true,
-            preserveTimestamps: true,
-        });
+        initPlatform(platform, options);
     }
-    console.log('Created android/ and ios/.');
 }
 
 function iconPath(options) {
@@ -154,7 +219,12 @@ function runAndroid() {
     syncResources();
     buildGame();
     run('./gradlew', ['--no-daemon', 'installDebug'], { cwd: androidGradleRoot() });
-    run('adb', ['shell', 'monkey', '-p', 'com.safeengine.jssdl.debug', '1']);
+    run('adb', ['shell', 'monkey', '-p', `${androidPackageName()}.debug`, '1']);
+}
+
+function androidPackageName() {
+    const gradle = readFileSync(join(androidGradleRoot(), 'app', 'build.gradle'), 'utf8');
+    return gradle.match(/applicationId "([^"]+)"/)?.[1] ?? defaultPackageName;
 }
 
 function runIos() {
@@ -187,6 +257,7 @@ function runIos() {
         '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_SYSROOT=iphonesimulator',
         `-DCMAKE_OSX_ARCHITECTURES=${process.arch === 'arm64' ? 'arm64' : 'x86_64'}`,
         '-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0', '-DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=YES',
+        ...iosCmakeSettings(),
     ]);
     run('xcodebuild', [
         '-project', join(buildRoot, 'SDL3Game.xcodeproj'), '-scheme', 'sdl3js',
@@ -196,8 +267,21 @@ function runIos() {
 
     const app = join(buildRoot, 'Debug-iphonesimulator', 'sdl3js.app');
     run('xcrun', ['simctl', 'install', device.udid, app]);
-    run('xcrun', ['simctl', 'launch', '--terminate-running-process', device.udid, 'com.safeengine.jssdl']);
-    console.log(`Launched com.safeengine.jssdl on ${device.name}.`);
+    const packageName = nativeSetting('JS_SDL_PACKAGE_NAME', defaultPackageName);
+    run('xcrun', ['simctl', 'launch', '--terminate-running-process', device.udid, packageName]);
+    console.log(`Launched ${packageName} on ${device.name}.`);
+}
+
+function nativeSetting(name, fallback) {
+    const cmake = readFileSync(join(nativeRoot, 'CMakeLists.txt'), 'utf8');
+    return cmake.match(new RegExp(`set\\(${name} "([^"]*)"`))?.[1] ?? fallback;
+}
+
+function iosCmakeSettings() {
+    return [
+        `-DJS_SDL_APP_NAME=${nativeSetting('JS_SDL_APP_NAME', defaultAppName)}`,
+        `-DJS_SDL_PACKAGE_NAME=${nativeSetting('JS_SDL_PACKAGE_NAME', defaultPackageName)}`,
+    ];
 }
 
 function optionValues(options, usage) {
@@ -251,6 +335,10 @@ function buildAndroid(options) {
 }
 
 function buildIos(options) {
+    if (options.length === 1 && options[0] === 'export') {
+        exportIosProject();
+        return;
+    }
     const usage = 'Usage: safex ios build --team <Apple Developer team ID>';
     const signing = optionValues(options, usage);
     if (signing.size !== 1 || !signing.has('--team')) fail(usage);
@@ -267,7 +355,7 @@ function buildIos(options) {
         '-S', nativeRoot, '-B', buildRoot, '-G', 'Xcode',
         '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_ARCHITECTURES=arm64',
         '-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0', '-DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO',
-        `-DJS_SDL_DEVELOPMENT_TEAM=${team}`,
+        `-DJS_SDL_DEVELOPMENT_TEAM=${team}`, ...iosCmakeSettings(),
     ]);
     run('xcodebuild', [
         '-project', join(buildRoot, 'SDL3Game.xcodeproj'), '-scheme', 'sdl3js',
@@ -281,10 +369,28 @@ function buildIos(options) {
     console.log(`iOS IPA: ${join('native', 'ios', 'build', 'export')}`);
 }
 
+function exportIosProject() {
+    initPlatformIfMissing('ios');
+    syncResources();
+    buildGame();
+    const buildRoot = join(nativeRoot, 'ios', 'xcode');
+    run('cmake', [
+        '-S', nativeRoot, '-B', buildRoot, '-G', 'Xcode',
+        '-DCMAKE_SYSTEM_NAME=iOS', '-DCMAKE_OSX_ARCHITECTURES=arm64',
+        '-DCMAKE_OSX_DEPLOYMENT_TARGET=15.0', '-DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO',
+        ...iosCmakeSettings(),
+    ]);
+    console.log(`iOS Xcode project: ${join('native', 'ios', 'xcode', 'SDL3Game.xcodeproj')}`);
+}
+
 const [platform, action, ...options] = process.argv.slice(2);
-if (platform === 'init' && !action) initNative();
-else if ((platform === 'android' || platform === 'ios') && action === 'init') initPlatform(platform);
-else if (platform === 'mobile' && action === 'init' && options.length === 0) initMobile();
+if (platform === 'init') {
+    const init = initOptions(action === undefined ? [] : [action, ...options]);
+    initNativeIfMissing();
+    configurePlatforms(init, ['android', 'ios'].filter((name) => existsSync(join(nativeRoot, name))));
+}
+else if ((platform === 'android' || platform === 'ios') && action === 'init') initPlatform(platform, initOptions(options));
+else if (platform === 'mobile' && action === 'init') initMobile(initOptions(options));
 else if (platform === 'mobile' && action === 'icon') generateIcons('all', options);
 else if ((platform === 'android' || platform === 'ios') && action === 'icon') generateIcons(platform, options);
 else if (platform === 'android' && action === 'run') runAndroid();
@@ -293,6 +399,6 @@ else if (platform === 'android' && action === 'build') buildAndroid(options);
 else if (platform === 'ios' && action === 'build') buildIos(options);
 else if (platform === 'run' && action === 'dev') runDev();
 else {
-    console.log('Usage: safex init | safex run dev | safex mobile init | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <init|run|build> | safex ios <init|run|build>');
+    console.log('Usage: safex init [-p <package-name>] [-n <app-name>] | safex run dev | safex <mobile|android|ios> init [-p <package-name>] [-n <app-name>] | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <run|build> | safex ios <run|build>');
     process.exitCode = 1;
 }

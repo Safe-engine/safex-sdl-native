@@ -32,16 +32,17 @@ Build commands:
 safex android build apk debug
 safex android build aab release --keystore ./release.keystore --key-alias upload --sign-pass '<password>'
 safex ios build --team ABCDE12345
+safex ios build export
 ```
 
 Initialize and tool the project:
 
 ```sh
 # init
-safex init
-safex ios init
-safex android init
-safex mobile init
+safex init -p [package_name] -n [app_name]
+safex ios init -p [package_name] -n [app_name]
+safex android init -p [package_name] -n [app_name]
+safex mobile init -p [package_name] -n [app_name]
 # create mobile icons
 safex ios icon -p ./icon
 safex android icon -p ./icon
