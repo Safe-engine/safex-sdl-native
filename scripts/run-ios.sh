@@ -34,6 +34,7 @@ if [[ "$DEVICE_STATE" != "Booted" ]]; then
     xcrun simctl boot "$DEVICE_UDID"
 fi
 xcrun simctl bootstatus "$DEVICE_UDID" -b
+open -a Simulator
 
 cd "$ROOT"
 bun run build

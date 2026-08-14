@@ -177,6 +177,7 @@ function runIos() {
 
     if (device.state !== 'Booted') run('xcrun', ['simctl', 'boot', device.udid]);
     run('xcrun', ['simctl', 'bootstatus', device.udid, '-b']);
+    run('open', ['-a', 'Simulator']);
 
     const iosRoot = join(nativeRoot, 'ios');
     const buildRoot = join(iosRoot, 'simulator');
@@ -196,6 +197,7 @@ function runIos() {
     const app = join(buildRoot, 'Debug-iphonesimulator', 'sdl3js.app');
     run('xcrun', ['simctl', 'install', device.udid, app]);
     run('xcrun', ['simctl', 'launch', '--terminate-running-process', device.udid, 'com.safeengine.jssdl']);
+    console.log(`Launched com.safeengine.jssdl on ${device.name}.`);
 }
 
 function optionValues(options, usage) {
