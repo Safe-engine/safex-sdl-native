@@ -1,4 +1,5 @@
 #include "js_sdl3.h"
+#include "js_native_bridge.h"
 #ifdef JS_SDL_ENABLE_BOX2D_MODULE
 #include "js_box2d.h"
 #endif
@@ -3594,6 +3595,50 @@ DEFINE_CALLBACK_BINDING(js_onTerminate, g_onTerminate)
 
 #undef DEFINE_CALLBACK_BINDING
 
+/*
+ * Ngôn ngữ ưu tiên của máy, trả về mảng thẻ BCP-47 kiểu ["vi-VN", "en"].
+ *
+ * Trên web game đọc `navigator.languages`; bản native trước đây không có đường nào để hỏi, nên mọi
+ * máy đều mở ra ngôn ngữ mặc định của game bất kể người dùng cài tiếng gì.
+ */
+static JSValue js_getPreferredLocales(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+  (void)this_val;
+  (void)argc;
+  (void)argv;
+
+  JSValue array = JS_NewArray(ctx);
+  if (JS_IsException(array))
+    return array;
+
+  int count = 0;
+  SDL_Locale **locales = SDL_GetPreferredLocales(&count);
+  if (!locales)
+    return array;
+
+  uint32_t index = 0;
+  for (int i = 0; i < count; i++)
+  {
+    if (!locales[i] || !locales[i]->language)
+      continue;
+
+    char tag[32];
+    if (locales[i]->country)
+      snprintf(tag, sizeof(tag), "%s-%s", locales[i]->language, locales[i]->country);
+    else
+      snprintf(tag, sizeof(tag), "%s", locales[i]->language);
+
+    JS_SetPropertyUint32(ctx, array, index++, JS_NewString(ctx, tag));
+  }
+
+  SDL_free(locales);
+  return array;
+}
+
 /* --- module export table --- */
 static const JSCFunctionListEntry funcs[] =
     {
@@ -3641,6 +3686,9 @@ static const JSCFunctionListEntry funcs[] =
         JS_CFUNC_DEF("onLowMemory", 1, js_onLowMemory),
         JS_CFUNC_DEF("onOrientationChange", 1, js_onOrientationChange),
         JS_CFUNC_DEF("onTerminate", 1, js_onTerminate),
+        JS_CFUNC_DEF("getPreferredLocales", 0, js_getPreferredLocales),
+        JS_CFUNC_DEF("callNative", 2, js_callNative),
+        JS_CFUNC_DEF("onNativeResult", 1, js_onNativeResult),
 };
 
 static int js_sdl3_init(JSContext *ctx, JSModuleDef *m)
@@ -3712,6 +3760,195 @@ static JSValue js_consoleAssert(
   return JS_UNDEFINED;
 }
 
+/* --- localStorage: giữ lại sau khi tắt app --- */
+
+/*
+ * Bản trước giữ toàn bộ localStorage trong RAM rồi giải phóng lúc tắt, nên mọi game chạy trên
+ * runtime này đều mất sạch tiến trình sau mỗi lần đóng app. Trên web không ai thấy, vì ở đó
+ * `localStorage` là của trình duyệt.
+ *
+ * Ghi ngay sau mỗi lần thay đổi chứ không đợi lúc thoát: Android giết app không báo trước và
+ * `onDestroy` không phải lúc nào cũng chạy, nên "lưu lúc thoát" là lưu hên xui.
+ */
+static char *g_storage_path = NULL;
+static bool g_storage_loaded = false;
+
+/*
+ * `SDL_GetPrefPath` trên Android trả về thư mục riêng của app trong bộ nhớ trong: không cần xin
+ * quyền nào, và bị dọn cùng app lúc gỡ. Đúng chỗ để đặt save.
+ */
+static const char *storage_path(void)
+{
+  if (g_storage_path)
+    return g_storage_path;
+
+  char *pref = SDL_GetPrefPath("safex", "game");
+  if (!pref)
+    return NULL;
+
+  size_t length = strlen(pref) + strlen("localstorage.dat") + 1;
+  g_storage_path = (char *)malloc(length);
+  if (g_storage_path)
+    snprintf(g_storage_path, length, "%slocalstorage.dat", pref);
+  SDL_free(pref);
+  return g_storage_path;
+}
+
+static char *copy_bytes(const char *source, size_t length)
+{
+  char *copy = (char *)malloc(length + 1);
+  if (!copy)
+    return NULL;
+  memcpy(copy, source, length);
+  copy[length] = '\0';
+  return copy;
+}
+
+/*
+ * Mỗi mục ghi thành "<độ dài khoá> <độ dài giá trị>\n<khoá><giá trị>\n".
+ *
+ * Ghi kèm độ dài chứ không tách bằng ký tự phân cách: giá trị save thường đã qua nén nên chứa đủ
+ * loại ký tự lạ, kể cả xuống dòng — tách bằng dấu là hỏng ngay lần đầu gặp.
+ */
+static void storage_save(void)
+{
+  const char *path = storage_path();
+  if (!path)
+    return;
+
+  size_t total = 0;
+  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
+  {
+    if (!g_storage[i].key)
+      continue;
+    size_t key_length = strlen(g_storage[i].key);
+    size_t value_length = g_storage[i].value ? strlen(g_storage[i].value) : 0;
+    int header = snprintf(NULL, 0, "%zu %zu\n", key_length, value_length);
+    if (header < 0)
+      return;
+    total += (size_t)header + key_length + value_length + 1;
+  }
+
+  char *buffer = (char *)malloc(total + 1);
+  if (!buffer)
+    return;
+
+  size_t offset = 0;
+  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
+  {
+    if (!g_storage[i].key)
+      continue;
+    const char *value = g_storage[i].value ? g_storage[i].value : "";
+    size_t key_length = strlen(g_storage[i].key);
+    size_t value_length = strlen(value);
+    int header = snprintf(
+        buffer + offset, total + 1 - offset, "%zu %zu\n", key_length, value_length);
+    if (header < 0)
+    {
+      free(buffer);
+      return;
+    }
+    offset += (size_t)header;
+    memcpy(buffer + offset, g_storage[i].key, key_length);
+    offset += key_length;
+    memcpy(buffer + offset, value, value_length);
+    offset += value_length;
+    buffer[offset++] = '\n';
+  }
+
+  /*
+   * Ghi ra file tạm rồi đổi tên. Ghi đè thẳng mà app bị giết giữa chừng là mất cả save cũ lẫn mới;
+   * đổi tên là thao tác nguyên tử nên cùng lắm chỉ mất đúng lần ghi cuối.
+   */
+  size_t tmp_length = strlen(path) + strlen(".tmp") + 1;
+  char *tmp_path = (char *)malloc(tmp_length);
+  if (!tmp_path)
+  {
+    free(buffer);
+    return;
+  }
+  snprintf(tmp_path, tmp_length, "%s.tmp", path);
+
+  if (!SDL_SaveFile(tmp_path, buffer, offset))
+    SDL_Log("localStorage: khong ghi duoc %s: %s", tmp_path, SDL_GetError());
+  else if (!SDL_RenamePath(tmp_path, path))
+    SDL_Log("localStorage: khong doi ten duoc %s: %s", tmp_path, SDL_GetError());
+
+  free(tmp_path);
+  free(buffer);
+}
+
+/*
+ * Nạp lại save lúc khởi động. File hỏng hay đọc dở thì dừng ở mục cuối cùng còn đọc được, giữ
+ * những gì đã lấy ra: mất một phần vẫn hơn mất trắng.
+ */
+static void storage_load(void)
+{
+  if (g_storage_loaded)
+    return;
+  g_storage_loaded = true;
+
+  const char *path = storage_path();
+  if (!path)
+    return;
+
+  size_t size = 0;
+  char *contents = (char *)SDL_LoadFile(path, &size);
+  if (!contents)
+    return; /* lần chạy đầu chưa có file — không phải lỗi */
+
+  size_t offset = 0;
+  while (offset < size)
+  {
+    char *header_end = (char *)memchr(contents + offset, '\n', size - offset);
+    if (!header_end)
+      break;
+
+    char *separator = NULL;
+    unsigned long long key_length = strtoull(contents + offset, &separator, 10);
+    if (!separator || *separator != ' ')
+      break;
+
+    char *value_end = NULL;
+    unsigned long long value_length = strtoull(separator + 1, &value_end, 10);
+    if (value_end != header_end)
+      break;
+
+    size_t body = (size_t)(header_end + 1 - contents);
+    if (body + key_length + value_length + 1 > size)
+      break;
+
+    StorageEntry *entry = find_free_storage_entry();
+    if (!entry)
+      break;
+
+    entry->key = copy_bytes(contents + body, (size_t)key_length);
+    entry->value = copy_bytes(contents + body + key_length, (size_t)value_length);
+    if (!entry->key || !entry->value)
+    {
+      free(entry->key);
+      free(entry->value);
+      memset(entry, 0, sizeof(*entry));
+      break;
+    }
+
+    offset = body + (size_t)key_length + (size_t)value_length + 1;
+  }
+
+  SDL_free(contents);
+}
+
+/* Chỉ dọn bộ nhớ, không đụng tới file. */
+static void storage_clear_all(void)
+{
+  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
+  {
+    free(g_storage[i].key);
+    free(g_storage[i].value);
+    memset(&g_storage[i], 0, sizeof(g_storage[i]));
+  }
+}
+
 static JSValue js_storage_getItem(
     JSContext *ctx,
     JSValueConst this_val,
@@ -3771,6 +4008,7 @@ static JSValue js_storage_setItem(
   entry->value = stored_value;
   JS_FreeCString(ctx, key);
   JS_FreeCString(ctx, value);
+  storage_save();
   return JS_UNDEFINED;
 }
 
@@ -3792,6 +4030,7 @@ static JSValue js_storage_removeItem(
     free(entry->key);
     free(entry->value);
     memset(entry, 0, sizeof(*entry));
+    storage_save();
   }
   JS_FreeCString(ctx, key);
   return JS_UNDEFINED;
@@ -3807,17 +4046,15 @@ static JSValue js_storage_clear(
   (void)this_val;
   (void)argc;
   (void)argv;
-  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
-  {
-    free(g_storage[i].key);
-    free(g_storage[i].value);
-    memset(&g_storage[i], 0, sizeof(g_storage[i]));
-  }
+  storage_clear_all();
+  // Game gọi clear() là cố ý xoá save, nên xoá luôn dưới đĩa chứ không chỉ trong bộ nhớ.
+  storage_save();
   return JS_UNDEFINED;
 }
 
 static void js_init_local_storage(JSContext *ctx)
 {
+  storage_load();
   JSValue global = JS_GetGlobalObject(ctx);
   JSValue storage = JS_NewObject(ctx);
   JS_SetPropertyStr(ctx, storage, "getItem",
@@ -3897,7 +4134,16 @@ void js_sdl3_shutdown(JSContext *ctx)
   g_onInterruption = g_onLowMemory = JS_UNDEFINED;
   g_onOrientationChange = g_onTerminate = JS_UNDEFINED;
 
-  js_storage_clear(ctx, JS_UNDEFINED, 0, NULL);
+  /*
+   * Chỉ dọn bộ nhớ. Tuyệt đối không gọi `js_storage_clear` ở đây: hàm đó ghi lại file rỗng, tức
+   * là xoá sạch save của người chơi mỗi lần đóng app — đúng cái lỗi vừa sửa.
+   */
+  storage_clear_all();
+  free(g_storage_path);
+  g_storage_path = NULL;
+  g_storage_loaded = false;
+
+  js_native_bridge_shutdown(ctx);
 
   for (int i = 0; i < MAX_TEXTURES; i++)
   {
@@ -4151,6 +4397,14 @@ void js_call_onInit(JSContext *ctx) { js_call_void(ctx, g_onInit); }
 void js_call_onUpdate(JSContext *ctx) { js_call_void(ctx, g_onUpdate); }
 void js_call_onUpdate_dt(JSContext *ctx, float dt)
 {
+  /*
+   * Giao kết quả từ tầng nền tảng ngay đầu frame, trên đúng thread JS.
+   *
+   * Đặt trước lệnh thoát sớm bên dưới: kết quả vẫn phải tới nơi kể cả khi game chưa gắn `onUpdate`,
+   * nếu không thì một cái promise nào đó bên JS treo mãi mà không ai biết vì sao.
+   */
+  js_native_bridge_pump(ctx);
+
   if (JS_IsUndefined(g_onUpdate))
     return;
   JSValue dt_val = JS_NewFloat64(ctx, (double)dt);
