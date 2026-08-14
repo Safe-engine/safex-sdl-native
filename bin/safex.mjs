@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -146,10 +146,20 @@ function configureAndroid(options) {
     if (!existsSync(androidRoot)) return;
     if (options.packageName) {
         const gradlePath = join(androidRoot, 'app', 'build.gradle');
+        const currentPackageName = readFileSync(gradlePath, 'utf8').match(/namespace "([^"]+)"/)?.[1];
+        const javaRoot = join(androidRoot, 'app', 'src', 'main', 'java');
+        const activityPath = currentPackageName && join(javaRoot, ...currentPackageName.split('.'), 'MainActivity.java');
+        const newActivityPath = join(javaRoot, ...options.packageName.split('.'), 'MainActivity.java');
+        if (activityPath && activityPath !== newActivityPath && existsSync(activityPath) && existsSync(newActivityPath)) {
+            fail(`cannot move MainActivity.java: ${newActivityPath} already exists.`);
+        }
         replaceFile(gradlePath, /namespace "[^"]+"/, `namespace "${options.packageName}"`);
         replaceFile(gradlePath, /applicationId "[^"]+"/, `applicationId "${options.packageName}"`);
-        const activityPath = join(androidRoot, 'app', 'src', 'main', 'java', 'com', 'safeengine', 'jssdl', 'MainActivity.java');
-        if (existsSync(activityPath)) replaceFile(activityPath, /^package [^;]+;/m, `package ${options.packageName};`);
+        if (activityPath && existsSync(activityPath)) {
+            mkdirSync(dirname(newActivityPath), { recursive: true });
+            if (activityPath !== newActivityPath) renameSync(activityPath, newActivityPath);
+            replaceFile(newActivityPath, /^package [^;]+;/m, `package ${options.packageName};`);
+        }
         const proguardPath = join(androidRoot, 'app', 'proguard-rules.pro');
         replaceFile(proguardPath, /-keep class [^\s]+\.\*\* \{ \*; \}/, `-keep class ${options.packageName}.** { *; }`);
     }
