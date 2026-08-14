@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const thirdParty = join(root, "third_party");
@@ -21,9 +21,16 @@ async function run(command: string[], cwd?: string) {
 async function cloneDependency(directory: string, repository: string, revision: string) {
   const destination = join(thirdParty, directory);
 
-  if (await Bun.file(join(destination, ".git")).exists()) {
-    console.log(`${directory} already exists`);
+  try {
+    await stat(join(destination, ".git"));
+    console.log(`Updating ${directory}`);
+    await run(["git", "pull", "--ff-only"], destination);
+    await run(["git", "submodule", "update", "--init", "--recursive"], destination);
     return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
   }
 
   await run([
