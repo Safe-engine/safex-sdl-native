@@ -65,6 +65,13 @@ function runSdl3jsPlugin() {
 // Vite lib-mode produces a single ESM bundle compatible with QuickJS-NG.
 // Native modules are external — resolved at runtime by the C host.
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Use the engine's JavaScript fallback when the native Box2D module is
+      // intentionally disabled in CMake.
+      box2d: '@safe-engine/sdl/lib/physics/box2d.js',
+    },
+  },
   build: {
     lib: {
       entry: path.resolve(__dirname, '../src/main.ts'),
@@ -75,7 +82,7 @@ export default defineConfig({
     target: 'esnext',
     minify: false,
     rollupOptions: {
-      external: ['sdl3', 'box2d'],
+      external: ['sdl3'],
     },
   },
   plugins: [runSdl3jsPlugin(), safexTransform()],
