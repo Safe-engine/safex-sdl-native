@@ -16,7 +16,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 include(CTest)
 
-option(JS_SDL_USE_VENDORED "Build mobile dependencies from third_party" OFF)
+option(JS_SDL_USE_VENDORED "Build mobile dependencies from third_party" ON)
 option(ENABLE_BOX2D "Build with Box2D physics support when available" OFF)
 
 set(JS_SDL_APP_NAME "JS SDL" CACHE STRING "Application name")
