@@ -1,10 +1,10 @@
 ## Safex setup
 
 From the repository root, use Bun to download the native dependencies and set
-`SAFEX_ROOT` for the current operating system:
+`SAFEX_ROOT` for the current operating system and install the CLI from its root:
 
 ```bash
-bun run scripts/setup-safex.ts
+bun run scripts/setup-safex.ts && bun link
 ```
 
 On macOS, the command adds `SAFEX_ROOT` to `~/.zshrc` (or `~/.bash_profile`).
@@ -12,17 +12,12 @@ On Linux, it uses `~/.zshrc`, `~/.bashrc`, or `~/.profile` according to the
 active shell. On Windows, it persists the variable with `setx`. Open a new
 terminal after it finishes. The command supports macOS, Linux, and Windows.
 
-# Safex CLI
-
-Install the CLI local checkout of this repository, install the CLI from its root instead:
-
-```sh
-bun link
-```
+## Safex CLI
 
 Quick run:
 ```sh
-safex create [app_name] -p [package_name]
+safex create [name] -p [package]
+cd [name]
 safex run dev
 safex android run
 safex ios run
@@ -40,10 +35,10 @@ Initialize and tool the project:
 
 ```sh
 # init
-safex init -p [package_name] -n [app_name]
-safex ios init -p [package_name] -n [app_name]
-safex android init -p [package_name] -n [app_name]
-safex mobile init -p [package_name] -n [app_name]
+safex init -p [package] -n [name]
+safex ios init -p [package] -n [name]
+safex android init -p [package] -n [name]
+safex mobile init -p [package] -n [name]
 # create mobile icons
 safex ios icon -p ./icon
 safex android icon -p ./icon
