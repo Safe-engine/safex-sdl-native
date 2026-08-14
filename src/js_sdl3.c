@@ -3594,6 +3594,50 @@ DEFINE_CALLBACK_BINDING(js_onTerminate, g_onTerminate)
 
 #undef DEFINE_CALLBACK_BINDING
 
+/*
+ * Ngôn ngữ ưu tiên của máy, trả về mảng thẻ BCP-47 kiểu ["vi-VN", "en"].
+ *
+ * Trên web game đọc `navigator.languages`; bản native trước đây không có đường nào để hỏi, nên mọi
+ * máy đều mở ra ngôn ngữ mặc định của game bất kể người dùng cài tiếng gì.
+ */
+static JSValue js_getPreferredLocales(
+    JSContext *ctx,
+    JSValueConst this_val,
+    int argc,
+    JSValueConst *argv)
+{
+  (void)this_val;
+  (void)argc;
+  (void)argv;
+
+  JSValue array = JS_NewArray(ctx);
+  if (JS_IsException(array))
+    return array;
+
+  int count = 0;
+  SDL_Locale **locales = SDL_GetPreferredLocales(&count);
+  if (!locales)
+    return array;
+
+  uint32_t index = 0;
+  for (int i = 0; i < count; i++)
+  {
+    if (!locales[i] || !locales[i]->language)
+      continue;
+
+    char tag[32];
+    if (locales[i]->country)
+      snprintf(tag, sizeof(tag), "%s-%s", locales[i]->language, locales[i]->country);
+    else
+      snprintf(tag, sizeof(tag), "%s", locales[i]->language);
+
+    JS_SetPropertyUint32(ctx, array, index++, JS_NewString(ctx, tag));
+  }
+
+  SDL_free(locales);
+  return array;
+}
+
 /* --- module export table --- */
 static const JSCFunctionListEntry funcs[] =
     {
@@ -3641,6 +3685,7 @@ static const JSCFunctionListEntry funcs[] =
         JS_CFUNC_DEF("onLowMemory", 1, js_onLowMemory),
         JS_CFUNC_DEF("onOrientationChange", 1, js_onOrientationChange),
         JS_CFUNC_DEF("onTerminate", 1, js_onTerminate),
+        JS_CFUNC_DEF("getPreferredLocales", 0, js_getPreferredLocales),
 };
 
 static int js_sdl3_init(JSContext *ctx, JSModuleDef *m)
