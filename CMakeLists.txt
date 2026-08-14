@@ -14,85 +14,71 @@ project(SDL3Game VERSION 1.0.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-include(CTest)
+option(BUILD_TESTING "Build tests" OFF)
 
-option(JS_SDL_USE_VENDORED "Build mobile dependencies from third_party" ON)
 option(ENABLE_BOX2D "Build with Box2D physics support when available" OFF)
 
 set(JS_SDL_APP_NAME "JS SDL" CACHE STRING "Application name")
 set(JS_SDL_PACKAGE_NAME "com.safeengine.jssdl" CACHE STRING "iOS bundle identifier")
 
-if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
-  set(JS_SDL_USE_VENDORED ON CACHE BOOL "" FORCE)
+
+
+set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype quickjs)
+
+if(ENABLE_BOX2D)
+  list(APPEND JS_SDL_VENDORED_DEPENDENCIES box2d)
 endif()
 
-if(JS_SDL_USE_VENDORED)
-  set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype quickjs)
-
-  if(ENABLE_BOX2D)
-    list(APPEND JS_SDL_VENDORED_DEPENDENCIES box2d)
+foreach(dependency ${JS_SDL_VENDORED_DEPENDENCIES})
+  if(NOT EXISTS "${SAFEX_ROOT}/third_party/${dependency}/CMakeLists.txt")
+    message(FATAL_ERROR
+      "Missing third_party/${dependency}. Run scripts/bootstrap-mobile-deps.sh first.")
   endif()
+endforeach()
 
-  foreach(dependency ${JS_SDL_VENDORED_DEPENDENCIES})
-    if(NOT EXISTS "${SAFEX_ROOT}/third_party/${dependency}/CMakeLists.txt")
-      message(FATAL_ERROR
-        "Missing third_party/${dependency}. Run scripts/bootstrap-mobile-deps.sh first.")
-    endif()
-  endforeach()
-
-  if(ANDROID)
-    set(SDL_SHARED ON CACHE BOOL "" FORCE)
-    set(SDL_STATIC OFF CACHE BOOL "" FORCE)
-  else()
-    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-    set(SDL_STATIC ON CACHE BOOL "" FORCE)
-  endif()
-
-  set(SDLIMAGE_VENDORED ON CACHE BOOL "" FORCE)
-  set(SDLIMAGE_DEPS_SHARED OFF CACHE BOOL "" FORCE)
-
-  # The app does not ship AVIF assets, and its bundled codecs currently fail
-  # with Android NDK 28 on 32-bit ARM and x86_64.
-  set(SDLIMAGE_AVIF OFF CACHE BOOL "" FORCE)
-  set(SDLIMAGE_AVIF_SHARED OFF CACHE BOOL "" FORCE)
-  set(SDLIMAGE_JPG_SHARED OFF CACHE BOOL "" FORCE)
-  set(SDLIMAGE_JXL_SHARED OFF CACHE BOOL "" FORCE)
-  set(SDLIMAGE_PNG_SHARED OFF CACHE BOOL "" FORCE)
-  set(SDLIMAGE_TIF_SHARED OFF CACHE BOOL "" FORCE)
-  set(SDLIMAGE_WEBP_SHARED OFF CACHE BOOL "" FORCE)
-  set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
-  set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
-  set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
-  set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
-  set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-
-  if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    # Apple's HVF runtime ships only in the device SDK.  Disable this
-    # optional FreeType driver so an Xcode project generated against the
-    # device SDK can also link when the Simulator destination is selected.
-    set(FT_DISABLE_HVF ON CACHE BOOL "" FORCE)
-
-    # SDL_image enables libwebp's desktop webpmux tool, whose install rule
-    # is invalid for iOS bundles. Keep the mux library, but skip the CLI.
-    cmake_policy(SET CMP0126 NEW)
-    set(WEBP_BUILD_WEBPMUX OFF)
-  endif()
-
-  add_subdirectory("${SAFEX_ROOT}/third_party/SDL" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL" EXCLUDE_FROM_ALL)
-  add_subdirectory("${SAFEX_ROOT}/third_party/SDL_image" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL_image" EXCLUDE_FROM_ALL)
-  add_subdirectory("${SAFEX_ROOT}/third_party/freetype" "${CMAKE_CURRENT_BINARY_DIR}/third_party/freetype" EXCLUDE_FROM_ALL)
-  add_subdirectory("${SAFEX_ROOT}/third_party/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/third_party/quickjs" EXCLUDE_FROM_ALL)
+if(ANDROID)
+  set(SDL_SHARED ON CACHE BOOL "" FORCE)
+  set(SDL_STATIC OFF CACHE BOOL "" FORCE)
 else()
-  find_package(SDL3 REQUIRED)
-  find_package(SDL3_image REQUIRED)
-  find_package(Freetype REQUIRED)
-  find_package(qjs REQUIRED)
-
-  if(ENABLE_BOX2D AND NOT EXISTS "${SAFEX_ROOT}/third_party/box2d/CMakeLists.txt")
-    find_package(box2d QUIET)
-  endif()
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
 endif()
+
+set(SDLIMAGE_VENDORED ON CACHE BOOL "" FORCE)
+set(SDLIMAGE_DEPS_SHARED OFF CACHE BOOL "" FORCE)
+
+# The app does not ship AVIF assets, and its bundled codecs currently fail
+# with Android NDK 28 on 32-bit ARM and x86_64.
+set(SDLIMAGE_AVIF OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_AVIF_SHARED OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_JPG_SHARED OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_JXL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_PNG_SHARED OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_TIF_SHARED OFF CACHE BOOL "" FORCE)
+set(SDLIMAGE_WEBP_SHARED OFF CACHE BOOL "" FORCE)
+set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  # Apple's HVF runtime ships only in the device SDK.  Disable this
+  # optional FreeType driver so an Xcode project generated against the
+  # device SDK can also link when the Simulator destination is selected.
+  set(FT_DISABLE_HVF ON CACHE BOOL "" FORCE)
+
+  # SDL_image enables libwebp's desktop webpmux tool, whose install rule
+  # is invalid for iOS bundles. Keep the mux library, but skip the CLI.
+  cmake_policy(SET CMP0126 NEW)
+  set(WEBP_BUILD_WEBPMUX OFF)
+endif()
+
+add_subdirectory("${SAFEX_ROOT}/third_party/SDL" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL" EXCLUDE_FROM_ALL)
+add_subdirectory("${SAFEX_ROOT}/third_party/SDL_image" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL_image" EXCLUDE_FROM_ALL)
+add_subdirectory("${SAFEX_ROOT}/third_party/freetype" "${CMAKE_CURRENT_BINARY_DIR}/third_party/freetype" EXCLUDE_FROM_ALL)
+add_subdirectory("${SAFEX_ROOT}/third_party/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/third_party/quickjs" EXCLUDE_FROM_ALL)
 
 set(FREETYPE_TARGET "")
 
