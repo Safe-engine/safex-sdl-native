@@ -90,6 +90,26 @@ function initOptions(options) {
     return { packageName, appName };
 }
 
+function createOptions(appName, options) {
+    const usage = 'Usage: safex create <app-name> [-p <package-name>]';
+    if (!appName || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(appName)
+        || (options.length !== 0 && (options.length !== 2 || options[0] !== '-p'))) fail(usage);
+    return { appName, packageName: initOptions(options).packageName };
+}
+
+async function createProject(appName, options) {
+    const { packageName } = createOptions(appName, options);
+    const workspacePath = join(projectRoot, appName);
+    if (existsSync(workspacePath)) fail(`${appName}/ already exists; refusing to overwrite it.`);
+    const { initProject, installDependencies, syncResConst } = await import('./project.mjs');
+
+    await initProject(workspacePath);
+    await installDependencies(workspacePath);
+    await syncResConst(workspacePath);
+
+    if (packageName) run(process.argv[1], ['init', '-p', packageName, '-n', appName], { cwd: workspacePath });
+}
+
 function replaceFile(path, pattern, replacement) {
     writeFileSync(path, readFileSync(path, 'utf8').replace(pattern, replacement));
 }
@@ -384,7 +404,8 @@ function exportIosProject() {
 }
 
 const [platform, action, ...options] = process.argv.slice(2);
-if (platform === 'init') {
+if (platform === 'create') await createProject(action, options);
+else if (platform === 'init') {
     const init = initOptions(action === undefined ? [] : [action, ...options]);
     initNativeIfMissing();
     configurePlatforms(init, ['android', 'ios'].filter((name) => existsSync(join(nativeRoot, name))));
@@ -399,6 +420,6 @@ else if (platform === 'android' && action === 'build') buildAndroid(options);
 else if (platform === 'ios' && action === 'build') buildIos(options);
 else if (platform === 'run' && action === 'dev') runDev();
 else {
-    console.log('Usage: safex init [-p <package-name>] [-n <app-name>] | safex run dev | safex <mobile|android|ios> init [-p <package-name>] [-n <app-name>] | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <run|build> | safex ios <run|build>');
+    console.log('Usage: safex create <app-name> [-p <package-name>] | safex init [-p <package-name>] [-n <app-name>] | safex run dev | safex <mobile|android|ios> init [-p <package-name>] [-n <app-name>] | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <run|build> | safex ios <run|build>');
     process.exitCode = 1;
 }

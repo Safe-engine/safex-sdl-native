@@ -22,6 +22,7 @@ bun link
 
 Quick run:
 ```sh
+safex create [app_name] -p [package_name]
 safex run dev
 safex android run
 safex ios run
