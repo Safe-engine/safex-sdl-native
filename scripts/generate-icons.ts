@@ -27,6 +27,9 @@ if (!existsSync(source)) {
 
 const icons = [
   { path: 'ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png', size: 1024 },
+  { path: 'ios/Assets.xcassets/LaunchIcon.imageset/LaunchIcon.png', size: 192 },
+  { path: 'ios/Assets.xcassets/LaunchIcon.imageset/LaunchIcon@2x.png', size: 384 },
+  { path: 'ios/Assets.xcassets/LaunchIcon.imageset/LaunchIcon@3x.png', size: 576 },
   { path: 'android/app/src/main/res/mipmap-mdpi/ic_launcher.png', size: 48 },
   { path: 'android/app/src/main/res/mipmap-hdpi/ic_launcher.png', size: 72 },
   { path: 'android/app/src/main/res/mipmap-xhdpi/ic_launcher.png', size: 96 },

@@ -43,6 +43,8 @@ safex ios init
 safex android init
 safex mobile init
 # create mobile icons
+safex ios icon -p ./icon
+safex android icon -p ./icon
 safex mobile icon -p ./icon
 ```
 
