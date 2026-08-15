@@ -93,7 +93,8 @@ if(NOT FREETYPE_TARGET)
 endif()
 
 set(JS_SDL_SOURCES
-  ${SAFEX_ROOT}/src/main.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
+  ${SAFEX_ROOT}/src/engine.c
   ${SAFEX_ROOT}/src/js_sdl3.c
 )
 
@@ -122,6 +123,8 @@ set(JS_SDL_TARGET main)
 if(NOT ANDROID)
   set(JS_SDL_TARGET sdl3js)
 endif()
+
+target_include_directories(${JS_SDL_TARGET} PRIVATE "${SAFEX_ROOT}/src")
 
 set(QUICKJS_TARGET qjs)
 

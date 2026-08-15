@@ -4146,7 +4146,7 @@ find_newest_frame:
   return true;
 }
 
-/* --- public API for main.c --- */
+/* --- public API for engine.c --- */
 void js_call_onInit(JSContext *ctx) { js_call_void(ctx, g_onInit); }
 void js_call_onUpdate(JSContext *ctx) { js_call_void(ctx, g_onUpdate); }
 void js_call_onUpdate_dt(JSContext *ctx, float dt)

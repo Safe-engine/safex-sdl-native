@@ -17,7 +17,7 @@ void js_destroy_render_queue(void);
 void js_collect_retired_textures(void);
 bool js_render_pending_frame(void);
 
-/* helpers for main.c game loop */
+/* helpers for the engine game loop */
 void js_call_onInit(JSContext *ctx);
 void js_call_onUpdate(JSContext *ctx);
 void js_call_onUpdate_dt(JSContext *ctx, float dt);

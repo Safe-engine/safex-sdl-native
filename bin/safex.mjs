@@ -45,7 +45,6 @@ function initNative() {
         .replaceAll('add_subdirectory(third_party/freetype EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/freetype" "${CMAKE_CURRENT_BINARY_DIR}/third_party/freetype" EXCLUDE_FROM_ALL)')
         .replaceAll('add_subdirectory(third_party/quickjs EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/third_party/quickjs" EXCLUDE_FROM_ALL)')
         .replaceAll('add_subdirectory(third_party/box2d EXCLUDE_FROM_ALL)', 'add_subdirectory("${SAFEX_ROOT}/third_party/box2d" "${CMAKE_CURRENT_BINARY_DIR}/third_party/box2d" EXCLUDE_FROM_ALL)')
-        .replaceAll('    src/main.c', '    ${SAFEX_ROOT}/src/main.c')
         .replaceAll('    src/js_sdl3.c', '    ${SAFEX_ROOT}/src/js_sdl3.c')
         .replaceAll('list(APPEND JS_SDL_SOURCES src/js_box2d.c)', 'list(APPEND JS_SDL_SOURCES ${SAFEX_ROOT}/src/js_box2d.c)')
         .replaceAll('        tests/native_binding_tests.c', '        ${SAFEX_ROOT}/tests/native_binding_tests.c')
@@ -62,6 +61,8 @@ function initNative() {
     ].join('\n');
 
     writeFileSync(join(nativeRoot, 'CMakeLists.txt'), configuredCmake);
+    mkdirSync(join(nativeRoot, 'src'));
+    cpSync(join(safexRoot, 'src', 'main.c'), join(nativeRoot, 'src', 'main.c'));
     cpSync(join(safexRoot, '.gitignore'), join(nativeRoot, '.gitignore'));
     cpSync(join(safexRoot, 'vite.config.ts'), join(nativeRoot, 'vite.config.ts'));
     console.log('Created native template files. Run: safex <android|ios> init');
@@ -107,7 +108,9 @@ async function createProject(appName, options) {
     await installDependencies(workspacePath);
     await syncResConst(workspacePath);
 
-    if (packageName) run(process.argv[1], ['init', '-p', packageName, '-n', appName], { cwd: workspacePath });
+    const initArgs = ['init', '-n', appName];
+    if (packageName) initArgs.push('-p', packageName);
+    run(process.argv[1], initArgs, { cwd: workspacePath });
 }
 
 function replaceFile(path, pattern, replacement) {
