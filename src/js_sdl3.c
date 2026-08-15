@@ -24,6 +24,12 @@ static int g_win_h = 720;
 static SDL_RendererLogicalPresentation g_resolution_policy =
     SDL_LOGICAL_PRESENTATION_LETTERBOX;
 static FT_Library g_ft_library = NULL;
+static js_sdl3_module_extension g_module_extension = {0};
+
+void js_sdl3_set_module_extension(const js_sdl3_module_extension *extension)
+{
+  g_module_extension = extension ? *extension : (js_sdl3_module_extension){0};
+}
 
 #define MAX_TEXTURES 512
 typedef enum TextureKind
@@ -3649,6 +3655,8 @@ static int js_sdl3_init(JSContext *ctx, JSModuleDef *m)
           ctx, m, funcs,
           sizeof(funcs) / sizeof(JSCFunctionListEntry)) < 0)
     return -1;
+  if (g_module_extension.set_exports && g_module_extension.set_exports(ctx, m) < 0)
+    return -1;
   return JS_SetModuleExport(ctx, m, "isNative", JS_TRUE);
 }
 
@@ -3658,6 +3666,8 @@ JSModuleDef *js_init_module_sdl3(JSContext *ctx, const char *module_name)
   JS_AddModuleExportList(
       ctx, m, funcs,
       sizeof(funcs) / sizeof(JSCFunctionListEntry));
+  if (g_module_extension.declare_exports)
+    g_module_extension.declare_exports(ctx, m);
   JS_AddModuleExport(ctx, m, "isNative");
   return m;
 }

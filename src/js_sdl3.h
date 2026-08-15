@@ -4,8 +4,14 @@
 #include <SDL3/SDL.h>
 
 typedef void (*js_main_thread_fn)(void *arg);
+typedef struct {
+    void (*declare_exports)(JSContext *ctx, JSModuleDef *module);
+    int (*set_exports)(JSContext *ctx, JSModuleDef *module);
+} js_sdl3_module_extension;
+
 void js_run_on_main_thread(js_main_thread_fn fn, void *arg);
 bool js_is_main_thread(void);
+void js_sdl3_set_module_extension(const js_sdl3_module_extension *extension);
 
 int  js_init_sdl3(JSContext *ctx);
 void js_sdl3_shutdown(JSContext *ctx);
