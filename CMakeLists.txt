@@ -15,14 +15,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 option(BUILD_TESTING "Build tests" OFF)
-
 option(ENABLE_BOX2D "Build with Box2D physics support when available" OFF)
 
 set(JS_SDL_APP_NAME "JS SDL" CACHE STRING "Application name")
 set(JS_SDL_PACKAGE_NAME "com.safeengine.jssdl" CACHE STRING "iOS bundle identifier")
-
-
-
 set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype quickjs)
 
 if(ENABLE_BOX2D)
