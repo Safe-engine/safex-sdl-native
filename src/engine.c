@@ -7,6 +7,17 @@
 
 #define MAX_QUEUED_EVENTS 128
 
+static engine_js_bridge_fn g_native_bridge_pump = NULL;
+static engine_js_bridge_fn g_native_bridge_shutdown = NULL;
+
+void engine_set_js_bridge_callbacks(
+    engine_js_bridge_fn pump,
+    engine_js_bridge_fn shutdown)
+{
+    g_native_bridge_pump = pump;
+    g_native_bridge_shutdown = shutdown;
+}
+
 typedef struct AppState {
     JSRuntime *runtime;
     JSContext *context;
@@ -277,6 +288,9 @@ static int run_logic_loop(void *userdata)
 
     if (!success) {
         if (state->context) {
+            if (g_native_bridge_shutdown) {
+                g_native_bridge_shutdown(state->context);
+            }
             js_sdl3_shutdown(state->context);
             JS_FreeContext(state->context);
         }
@@ -321,6 +335,9 @@ static int run_logic_loop(void *userdata)
 
         process_queued_events(state);
         js_collect_retired_textures();
+        if (g_native_bridge_pump) {
+            g_native_bridge_pump(state->context);
+        }
 
         Uint64 update_start_ns = SDL_GetTicksNS();
         js_execute_pending_job(state->runtime);
@@ -351,6 +368,9 @@ static int run_logic_loop(void *userdata)
 
     js_disable_render_queue();
     js_destroy_render_queue();
+    if (g_native_bridge_shutdown) {
+        g_native_bridge_shutdown(state->context);
+    }
     js_sdl3_shutdown(state->context);
     JS_FreeContext(state->context);
     JS_FreeRuntime(state->runtime);
