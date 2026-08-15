@@ -26,9 +26,9 @@ if(ENABLE_BOX2D)
 endif()
 
 foreach(dependency ${JS_SDL_VENDORED_DEPENDENCIES})
-  if(NOT EXISTS "${SAFEX_ROOT}/third_party/${dependency}/CMakeLists.txt")
+  if(NOT EXISTS "${SAFEX_ROOT}/third_party/${dependency}/upstream-CMakeLists.txt")
     message(FATAL_ERROR
-      "Missing third_party/${dependency}. Run scripts/bootstrap-mobile-deps.sh first.")
+      "Missing source-only third_party/${dependency}. Run bun scripts/setup-safex.ts first.")
   endif()
 endforeach()
 
