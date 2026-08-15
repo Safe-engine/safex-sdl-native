@@ -28,7 +28,7 @@ Build commands:
 safex android build apk debug
 safex android build aab release --keystore ./release.keystore --key-alias upload --sign-pass '<password>'
 safex ios build --team ABCDE12345
-safex ios build export
+safex ios export
 ```
 
 Initialize and tool the project:

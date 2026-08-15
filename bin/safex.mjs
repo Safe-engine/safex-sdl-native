@@ -377,10 +377,6 @@ function buildAndroid(options) {
 }
 
 function buildIos(options) {
-    if (options.length === 1 && options[0] === 'export') {
-        exportIosProject();
-        return;
-    }
     const usage = 'Usage: safex ios build --team <Apple Developer team ID>';
     const signing = optionValues(options, usage);
     if (signing.size !== 1 || !signing.has('--team')) fail(usage);
@@ -440,8 +436,9 @@ else if (platform === 'android' && action === 'run') runAndroid();
 else if (platform === 'ios' && action === 'run') runIos();
 else if (platform === 'android' && action === 'build') buildAndroid(options);
 else if (platform === 'ios' && action === 'build') buildIos(options);
+else if (platform === 'ios' && action === 'export') exportIosProject();
 else if (platform === 'run' && action === 'dev') runDev();
 else {
-    console.log('Usage: safex create <app-name> [-p <package-name>] | safex init [-p <package-name>] [-n <app-name>] | safex run dev | safex <mobile|android|ios> init [-p <package-name>] [-n <app-name>] | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <run|build> | safex ios <run|build>');
+    console.log('Usage: safex create <app-name> [-p <package-name>] | safex init [-p <package-name>] [-n <app-name>] | safex run dev | safex <mobile|android|ios> init [-p <package-name>] [-n <app-name>] | safex <mobile|android|ios> icon [-p <icon-path>] | safex android <run|build> | safex ios <run|build|export>');
     process.exitCode = 1;
 }
