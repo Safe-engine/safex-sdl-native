@@ -69,16 +69,31 @@ Gradle automatically.
 
 ### Command line
 
-Install JDK 17+ and the Android command-line tools. On macOS with Homebrew:
+On macOS, use the JBR (JDK) and Android SDK installed by Android Studio. In
+Android Studio, open **Preferences** → **Appearance & Behavior** → **System
+Settings** → **Android SDK**. Copy **Android SDK Location** and, in the **SDK
+Tools** tab, install **Android SDK Command-line Tools (latest)**.
+
+Add the following to `~/.zshrc`, replacing the SDK path if Android Studio shows
+a different location:
 
 ```bash
-brew install openjdk@17
-brew install --cask android-commandlinetools
+export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 ```
 
-Set `JAVA_HOME` to JDK 17+ and `ANDROID_HOME` (or `ANDROID_SDK_ROOT`) to the
-Android SDK location. Then install the SDK components and point Gradle at the
-SDK:
+Reload the shell configuration and verify that the Android Studio tools are
+available:
+
+```bash
+source ~/.zshrc
+java -version
+sdkmanager --version
+```
+
+Then install the SDK components and point Gradle at the SDK:
 
 ```bash
 sdkmanager --licenses
