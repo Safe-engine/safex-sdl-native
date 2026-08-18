@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const thirdParty = join(root, "third_party");
@@ -166,6 +166,54 @@ async function configureUnixEnvironment() {
   console.log(`Added SAFEX_ROOT to ${profile}. Open a new terminal or run: . ${profile}`);
 }
 
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\\"'\\\"'")}'`;
+}
+
+async function replaceLauncher(launcher: string, content: string, mode?: number) {
+  try {
+    const backup = `${launcher}.safex-backup-${Date.now()}`;
+    await rename(launcher, backup);
+    console.log(`Backed up existing launcher to ${backup}.`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  await writeFile(launcher, content);
+  if (mode) await chmod(launcher, mode);
+}
+
+async function installCliLauncher() {
+  const home = process.env.USERPROFILE ?? process.env.HOME;
+  if (!home) {
+    throw new Error("HOME or USERPROFILE is required to install the Safex CLI launcher.");
+  }
+
+  const bunInstall = process.env.BUN_INSTALL ?? join(home, ".bun");
+  const binDirectory = join(bunInstall, "bin");
+  await mkdir(binDirectory, { recursive: true });
+
+  if (process.platform === "win32") {
+    const launcher = join(binDirectory, "safex.cmd");
+    // Bun link creates this executable shim, which cannot spawn an .mjs bin
+    // on Windows. Preserve it as a backup so the .cmd wrapper takes precedence.
+    const legacyLauncher = join(binDirectory, "safex.exe");
+    try {
+      const backup = `${legacyLauncher}.safex-backup-${Date.now()}`;
+      await rename(legacyLauncher, backup);
+      console.log(`Backed up legacy Bun launcher to ${backup}.`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await replaceLauncher(launcher, `@echo off\r\n"${process.execPath}" "${join(root, "bin", "safex.mjs")}" %*\r\n`);
+  } else {
+    const launcher = join(binDirectory, "safex");
+    await replaceLauncher(launcher, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(join(root, "bin", "safex.mjs"))} "$@"\n`, 0o755);
+  }
+
+  console.log(`Installed Safex CLI launcher in ${binDirectory}.`);
+}
+
 async function configureWindowsEnvironment() {
   await run(["setx", "SAFEX_ROOT", root]);
   console.log("Added SAFEX_ROOT. Restart your command-line application.");
@@ -174,9 +222,11 @@ async function configureWindowsEnvironment() {
 if (process.platform === "darwin" || process.platform === "linux") {
   await bootstrapNativeDependencies();
   await configureUnixEnvironment();
+  await installCliLauncher();
 } else if (process.platform === "win32") {
   await bootstrapNativeDependencies();
   await configureWindowsEnvironment();
+  await installCliLauncher();
 } else {
   throw new Error("setup-safex.ts supports macOS, Linux, and Windows only.");
 }

@@ -18,8 +18,10 @@ On Windows, invoke the CLI through Bun from the repository root:
 bun run safex -- create my-app
 ```
 
-The checked-in wrapper is also available as `bin\\safex.cmd` when working from
-the repository. This avoids relying on Bun's linked `.mjs` executable shim.
+`bun run setup` installs the `safex` launcher in Bun's `bin` directory. On
+Windows it replaces Bun's incompatible linked `.mjs` shim with a `.cmd` wrapper;
+on macOS and Linux it installs an executable shell wrapper. Open a new terminal
+after setup, then use `safex` normally.
 
 ## Safex CLI
 

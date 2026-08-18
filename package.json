@@ -4,7 +4,7 @@
     "safex": "bin/safex.mjs"
   },
   "scripts": {
-    "setup": "bun run scripts/setup-safex.ts && bun link",
+    "setup": "bun ./scripts/setup-safex.ts",
     "safex": "bun ./bin/safex.mjs",
     "init": "cmake -S . -B build",
     "build": "vite build",
