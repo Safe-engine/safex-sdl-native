@@ -4,6 +4,8 @@
     "safex": "bin/safex.mjs"
   },
   "scripts": {
+    "setup": "bun run scripts/setup-safex.ts && bun link",
+    "safex": "bun ./bin/safex.mjs",
     "init": "cmake -S . -B build",
     "build": "vite build",
     "predev": "cmake --build build --target sdl3js --parallel",

@@ -148,6 +148,7 @@ project.properties
 
 !/bin/
 !/bin/safex.mjs
+!/bin/safex.cmd
 
 /v*-deps-*.zip
 /v*-lua-runtime-*.zip

@@ -4,13 +4,22 @@ From the repository root, use Bun to download the native dependencies and set
 `SAFEX_ROOT` for the current operating system and install the CLI from its root:
 
 ```bash
-bun run scripts/setup-safex.ts && bun link
+bun run setup
 ```
 
 On macOS, the command adds `SAFEX_ROOT` to `~/.zshrc` (or `~/.bash_profile`).
 On Linux, it uses `~/.zshrc`, `~/.bashrc`, or `~/.profile` according to the
 active shell. On Windows, it persists the variable with `setx`. Open a new
 terminal after it finishes. The command supports macOS, Linux, and Windows.
+
+On Windows, invoke the CLI through Bun from the repository root:
+
+```powershell
+bun run safex -- create my-app
+```
+
+The checked-in wrapper is also available as `bin\\safex.cmd` when working from
+the repository. This avoids relying on Bun's linked `.mjs` executable shim.
 
 ## Safex CLI
 
