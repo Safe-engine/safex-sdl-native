@@ -1,9 +1,11 @@
 ## Safex setup
 
-From the repository root, use Bun to download the native dependencies and set
+Clone this repository, use Bun to download the native dependencies and set
 `SAFEX_ROOT` for the current operating system and install the CLI from its root:
 
 ```bash
+git clone https://github.com/Safe-engine/safex-sdl-native
+cd safex-sdl-native
 bun run setup
 ```
 
@@ -29,7 +31,8 @@ Quick run:
 ```sh
 safex create [name] -p [package]
 cd [name]
-safex run dev
+bun run dev # for web
+safex run dev # for native
 safex android run
 safex ios run
 ```
