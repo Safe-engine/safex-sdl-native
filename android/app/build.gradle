@@ -18,7 +18,12 @@ def safexRoot = System.getenv("SAFEX_ROOT")
 if (!safexRoot) {
     throw new GradleException("SAFEX_ROOT is required. Run Gradle through the safex CLI.")
 }
+def buildGameBundle = tasks.register("buildGameBundle", Exec) {
+    workingDir(gameProjectDir)
+    commandLine "bun", "run", "vite", "build", "--config", "native/vite.config.ts"
+}
 def syncGameAssets = tasks.register("syncGameAssets", Sync) {
+    dependsOn(buildGameBundle)
     from(nativeProjectDir) {
         include "dist/**"
     }
@@ -42,7 +47,6 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments "-DJS_SDL_USE_VENDORED=ON"
                 abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
             }
         }

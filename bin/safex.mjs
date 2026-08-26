@@ -259,7 +259,7 @@ function runDev() {
 function runAndroid() {
     initPlatformIfMissing('android');
     syncResources();
-    buildGame();
+    // buildGame();
     run('./gradlew', ['--no-daemon', 'installDebug'], { cwd: androidGradleRoot() });
     run('adb', ['shell', 'monkey', '-p', `${androidPackageName()}.debug`, '1']);
 }
