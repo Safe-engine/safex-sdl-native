@@ -7,10 +7,20 @@
 #include "dr_mp3.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef JS_SDL_STORAGE_ORGANIZATION
+#define JS_SDL_STORAGE_ORGANIZATION "SafeEngine"
+#endif
+
+#ifndef JS_SDL_STORAGE_APP
+#define JS_SDL_STORAGE_APP "com.safeengine.jssdl"
+#endif
 
 /* --- global state --- */
 static SDL_Window *g_window = NULL;
@@ -357,6 +367,155 @@ static StorageEntry *find_free_storage_entry(void)
       return &g_storage[i];
   }
   return NULL;
+}
+
+static void storage_clear_memory(void)
+{
+  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
+  {
+    free(g_storage[i].key);
+    free(g_storage[i].value);
+    memset(&g_storage[i], 0, sizeof(g_storage[i]));
+  }
+}
+
+static char *storage_file_path(void)
+{
+  char *directory = SDL_GetPrefPath(
+      JS_SDL_STORAGE_ORGANIZATION, JS_SDL_STORAGE_APP);
+  if (!directory)
+    return NULL;
+
+  static const char filename[] = "local-storage.bin";
+  size_t length = strlen(directory) + sizeof(filename);
+  char *path = malloc(length);
+  if (path)
+    snprintf(path, length, "%s%s", directory, filename);
+  SDL_free(directory);
+  return path;
+}
+
+static bool storage_write(FILE *file, const void *data, size_t length)
+{
+  return fwrite(data, 1, length, file) == length;
+}
+
+static bool storage_save(void)
+{
+  char *path = storage_file_path();
+  if (!path)
+    return false;
+
+  size_t temporary_length = strlen(path) + sizeof(".tmp");
+  char *temporary_path = malloc(temporary_length);
+  if (!temporary_path)
+  {
+    free(path);
+    return false;
+  }
+  snprintf(temporary_path, temporary_length, "%s.tmp", path);
+
+  FILE *file = fopen(temporary_path, "wb");
+  static const unsigned char magic[] = {'J', 'S', 'S', 'D', 'L', 'S', '1'};
+  uint32_t count = 0;
+  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
+    count += g_storage[i].key != NULL;
+
+  bool saved = file && storage_write(file, magic, sizeof(magic)) &&
+               storage_write(file, &count, sizeof(count));
+  for (int i = 0; saved && i < MAX_STORAGE_ENTRIES; i++)
+  {
+    StorageEntry *entry = &g_storage[i];
+    if (!entry->key)
+      continue;
+    size_t key_length_size = strlen(entry->key);
+    size_t value_length_size = strlen(entry->value);
+    if (key_length_size > UINT32_MAX || value_length_size > UINT32_MAX)
+    {
+      saved = false;
+      break;
+    }
+    uint32_t key_length = (uint32_t)key_length_size;
+    uint32_t value_length = (uint32_t)value_length_size;
+    saved = storage_write(file, &key_length, sizeof(key_length)) &&
+            storage_write(file, &value_length, sizeof(value_length)) &&
+            storage_write(file, entry->key, key_length) &&
+            storage_write(file, entry->value, value_length);
+  }
+  if (file && fclose(file) != 0)
+    saved = false;
+
+  if (saved)
+  {
+#ifdef _WIN32
+    remove(path);
+#endif
+    saved = rename(temporary_path, path) == 0;
+  }
+  if (!saved)
+  {
+    remove(temporary_path);
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Could not save localStorage to '%s': %s",
+                path, strerror(errno));
+  }
+  free(temporary_path);
+  free(path);
+  return saved;
+}
+
+static bool storage_read_string(FILE *file, uint32_t length, char **value)
+{
+  if (length == UINT32_MAX)
+    return false;
+  char *string = malloc((size_t)length + 1);
+  if (!string)
+    return false;
+  if (fread(string, 1, length, file) != length)
+  {
+    free(string);
+    return false;
+  }
+  string[length] = '\0';
+  *value = string;
+  return true;
+}
+
+static void storage_load(void)
+{
+  char *path = storage_file_path();
+  if (!path)
+    return;
+  FILE *file = fopen(path, "rb");
+  free(path);
+  if (!file)
+    return;
+
+  static const unsigned char magic[] = {'J', 'S', 'S', 'D', 'L', 'S', '1'};
+  unsigned char file_magic[sizeof(magic)];
+  uint32_t count = 0;
+  bool valid = fread(file_magic, 1, sizeof(file_magic), file) == sizeof(file_magic) &&
+               memcmp(file_magic, magic, sizeof(magic)) == 0 &&
+               fread(&count, sizeof(count), 1, file) == 1 &&
+               count <= MAX_STORAGE_ENTRIES;
+
+  for (uint32_t i = 0; valid && i < count; i++)
+  {
+    uint32_t key_length;
+    uint32_t value_length;
+    valid = fread(&key_length, sizeof(key_length), 1, file) == 1 &&
+            fread(&value_length, sizeof(value_length), 1, file) == 1 &&
+            storage_read_string(file, key_length, &g_storage[i].key) &&
+            storage_read_string(file, value_length, &g_storage[i].value);
+  }
+  fclose(file);
+
+  if (!valid)
+  {
+    storage_clear_memory();
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Ignoring corrupt localStorage data");
+  }
 }
 
 static bool has_resource_prefix(const char *path)
@@ -3779,6 +3938,7 @@ static JSValue js_storage_setItem(
   free(entry->value);
   entry->key = entry->key ? entry->key : stored_key;
   entry->value = stored_value;
+  storage_save();
   JS_FreeCString(ctx, key);
   JS_FreeCString(ctx, value);
   return JS_UNDEFINED;
@@ -3802,6 +3962,7 @@ static JSValue js_storage_removeItem(
     free(entry->key);
     free(entry->value);
     memset(entry, 0, sizeof(*entry));
+    storage_save();
   }
   JS_FreeCString(ctx, key);
   return JS_UNDEFINED;
@@ -3817,12 +3978,8 @@ static JSValue js_storage_clear(
   (void)this_val;
   (void)argc;
   (void)argv;
-  for (int i = 0; i < MAX_STORAGE_ENTRIES; i++)
-  {
-    free(g_storage[i].key);
-    free(g_storage[i].value);
-    memset(&g_storage[i], 0, sizeof(g_storage[i]));
-  }
+  storage_clear_memory();
+  storage_save();
   return JS_UNDEFINED;
 }
 
@@ -3840,6 +3997,7 @@ static void js_init_local_storage(JSContext *ctx)
                     JS_NewCFunction(ctx, js_storage_clear, "clear", 0));
   JS_SetPropertyStr(ctx, global, "localStorage", storage);
   JS_FreeValue(ctx, global);
+  storage_load();
 }
 
 int js_init_console(JSContext *ctx)
@@ -3907,7 +4065,7 @@ void js_sdl3_shutdown(JSContext *ctx)
   g_onInterruption = g_onLowMemory = JS_UNDEFINED;
   g_onOrientationChange = g_onTerminate = JS_UNDEFINED;
 
-  js_storage_clear(ctx, JS_UNDEFINED, 0, NULL);
+  storage_clear_memory();
 
   for (int i = 0; i < MAX_TEXTURES; i++)
   {

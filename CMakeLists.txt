@@ -148,6 +148,8 @@ target_link_libraries(
 )
 
 target_compile_definitions(${JS_SDL_TARGET} PRIVATE
+  JS_SDL_STORAGE_ORGANIZATION="SafeEngine"
+  JS_SDL_STORAGE_APP="${JS_SDL_PACKAGE_NAME}"
   $<$<CONFIG:Debug>:JS_SDL_ENABLE_PROFILING=1>
 )
 
@@ -212,6 +214,11 @@ if(BUILD_TESTING)
   if(ENABLE_BOX2D)
     target_compile_definitions(js_sdl3_native_tests PRIVATE JS_SDL_ENABLE_BOX2D_MODULE=1)
   endif()
+
+  target_compile_definitions(js_sdl3_native_tests PRIVATE
+    JS_SDL_STORAGE_ORGANIZATION="SafeEngine"
+    JS_SDL_STORAGE_APP="com.safeengine.jssdl.tests"
+  )
 
   add_test(NAME js_sdl3_native_tests COMMAND js_sdl3_native_tests)
 endif()

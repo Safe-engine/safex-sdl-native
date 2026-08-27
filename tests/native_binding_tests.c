@@ -234,6 +234,51 @@ static void test_local_storage(JSContext *ctx)
     JS_FreeValue(ctx, value);
 }
 
+static void test_local_storage_persistence(void)
+{
+    JSRuntime *runtime = JS_NewRuntime();
+    JSContext *ctx = runtime ? JS_NewContext(runtime) : NULL;
+    expect_true("creates JavaScript context for storage persistence", ctx != NULL);
+    if (!ctx) {
+        if (runtime) JS_FreeRuntime(runtime);
+        return;
+    }
+
+    js_init_sdl3(ctx);
+    JSValue value = eval_js(
+        ctx,
+        "localStorage.setItem('__persistence_test__', 'survives restart')",
+        JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, value);
+    js_sdl3_shutdown(ctx);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(runtime);
+
+    runtime = JS_NewRuntime();
+    ctx = runtime ? JS_NewContext(runtime) : NULL;
+    expect_true("recreates JavaScript context for storage persistence", ctx != NULL);
+    if (!ctx) {
+        if (runtime) JS_FreeRuntime(runtime);
+        return;
+    }
+
+    js_init_sdl3(ctx);
+    value = eval_js(
+        ctx,
+        "localStorage.getItem('__persistence_test__') === 'survives restart'",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true("localStorage survives a native restart", JS_ToBool(ctx, value));
+    JS_FreeValue(ctx, value);
+    value = eval_js(
+        ctx,
+        "localStorage.removeItem('__persistence_test__')",
+        JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, value);
+    js_sdl3_shutdown(ctx);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(runtime);
+}
+
 static void test_invalid_binding_arguments(JSContext *ctx)
 {
     JSValue module = eval_js(
@@ -468,6 +513,8 @@ int main(void)
 
     JS_FreeContext(ctx);
     JS_FreeRuntime(runtime);
+
+    test_local_storage_persistence();
     SDL_Quit();
 
     if (failures == 0) {
