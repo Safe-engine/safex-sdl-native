@@ -18,9 +18,12 @@ def safexRoot = System.getenv("SAFEX_ROOT")
 if (!safexRoot) {
     throw new GradleException("SAFEX_ROOT is required. Run Gradle through the safex CLI.")
 }
+def bunFromInstall = System.getenv("BUN_INSTALL") ? new File(System.getenv("BUN_INSTALL"), "bin/bun") : null
+def bunFromHome = new File(System.getProperty("user.home"), ".bun/bin/bun")
+def bunExecutable = [bunFromInstall, bunFromHome].find { it?.canExecute() }?.absolutePath ?: "bun"
 def buildGameBundle = tasks.register("buildGameBundle", Exec) {
     workingDir(gameProjectDir)
-    commandLine "bun", "run", "vite", "build", "--config", "native/vite.config.ts"
+    commandLine bunExecutable, "run", "vite", "build", "--config", "native/vite.config.ts"
 }
 def syncGameAssets = tasks.register("syncGameAssets", Sync) {
     dependsOn(buildGameBundle)
