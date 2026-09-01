@@ -15,6 +15,7 @@ void js_sdl3_set_module_extension(const js_sdl3_module_extension *extension);
 
 int  js_init_sdl3(JSContext *ctx);
 void js_sdl3_shutdown(JSContext *ctx);
+void js_network_pump(JSContext *ctx);
 void js_execute_pending_job(JSRuntime *rt);
 void js_set_frame_timing(float delta_time);
 bool js_enable_render_queue(void);

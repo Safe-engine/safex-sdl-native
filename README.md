@@ -75,6 +75,24 @@ use `safex mobile icon [-p <icon-path>]`; without `-p`, it uses `icon.png`,
 Generated files are written beneath `native/`. Use `safex android icon` or
 `safex ios icon` to update only one platform.
 
+## Native networking
+
+Native builds provide browser-style global `fetch` and `WebSocket` APIs. `fetch`
+accepts `method`, plain-object `headers`, and string or `ArrayBuffer` `body`;
+its response exposes `status`, `ok`, `url`, `text()`, `json()`, and
+`arrayBuffer()`. `WebSocket` supports `onopen`, `onmessage`, `onerror`,
+`onclose`, `send()`, and `close()` for `ws:` and `wss:` URLs.
+
+```js
+const response = await fetch('https://api.example.com/profile', {
+  headers: { Authorization: `Bearer ${token}` },
+});
+const profile = await response.json();
+
+const socket = new WebSocket('wss://api.example.com/events');
+socket.onmessage = ({ data }) => console.log(data);
+```
+
 ## Android
 
 Android requires JDK 17 or newer, Android SDK 37, Build Tools 37.0.0, NDK

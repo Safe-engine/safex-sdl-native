@@ -1,4 +1,5 @@
 #include "js_sdl3.h"
+#include "js_network.h"
 #ifdef JS_SDL_ENABLE_BOX2D_MODULE
 #include "js_box2d.h"
 #endif
@@ -4031,11 +4032,14 @@ int js_init_sdl3(JSContext *ctx)
 #endif
   js_init_console(ctx);
   js_init_local_storage(ctx);
+  if (js_network_init(ctx) < 0)
+    return -1;
   return 0;
 }
 
 void js_sdl3_shutdown(JSContext *ctx)
 {
+  js_network_shutdown(ctx);
 #ifdef JS_SDL_ENABLE_BOX2D_MODULE
   js_box2d_shutdown();
 #endif

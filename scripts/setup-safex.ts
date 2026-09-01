@@ -56,6 +56,18 @@ const dependencies: Dependency[] = [
     revision: process.env.BOX2D_REVISION ?? "main",
     sparsePaths: ["/CMakeLists.txt", "/cmake/", "/include/", "/src/"],
   },
+  {
+    directory: "mbedtls",
+    repository: "https://github.com/Mbed-TLS/mbedtls.git",
+    revision: process.env.MBEDTLS_REVISION ?? "v3.6.4",
+    sparsePaths: ["/*"],
+  },
+  {
+    directory: "curl",
+    repository: "https://github.com/curl/curl.git",
+    revision: process.env.CURL_REVISION ?? "curl-8_12_1",
+    sparsePaths: ["/*"],
+  },
 ];
 
 function moduleCmake(dependency: Dependency) {

@@ -372,6 +372,20 @@ static void test_async_await(JSContext *ctx)
     JS_FreeValue(ctx, callback_value);
 }
 
+static void test_network_bindings(JSContext *ctx)
+{
+    JSValue value = eval_js(
+        ctx,
+        "typeof fetch === 'function' && "
+        "typeof WebSocket === 'function' && "
+        "WebSocket.CONNECTING === 0 && WebSocket.OPEN === 1 && "
+        "typeof WebSocket.prototype.send === 'function' && "
+        "typeof WebSocket.prototype.close === 'function'",
+        JS_EVAL_TYPE_GLOBAL);
+    expect_true("fetch and WebSocket globals are registered", JS_ToBool(ctx, value));
+    JS_FreeValue(ctx, value);
+}
+
 static void test_window_size_defaults(void)
 {
     int width = 0;
@@ -506,6 +520,7 @@ int main(void)
     test_local_storage(ctx);
     test_invalid_binding_arguments(ctx);
     test_async_await(ctx);
+    test_network_bindings(ctx);
     test_box2d_module_registration(ctx);
     test_window_size_defaults();
     test_coordinate_conversion_without_renderer();

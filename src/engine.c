@@ -335,6 +335,7 @@ static int run_logic_loop(void *userdata)
 
         process_queued_events(state);
         js_collect_retired_textures();
+        js_network_pump(state->context);
         if (g_native_bridge_pump) {
             g_native_bridge_pump(state->context);
         }

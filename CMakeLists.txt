@@ -19,14 +19,14 @@ option(ENABLE_BOX2D "Build with Box2D physics support when available" OFF)
 
 set(JS_SDL_APP_NAME "JS SDL" CACHE STRING "Application name")
 set(JS_SDL_PACKAGE_NAME "com.safeengine.jssdl" CACHE STRING "iOS bundle identifier")
-set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype quickjs)
+set(JS_SDL_VENDORED_DEPENDENCIES SDL SDL_image freetype quickjs mbedtls curl)
 
 if(ENABLE_BOX2D)
   list(APPEND JS_SDL_VENDORED_DEPENDENCIES box2d)
 endif()
 
 foreach(dependency ${JS_SDL_VENDORED_DEPENDENCIES})
-  if(NOT EXISTS "${SAFEX_ROOT}/third_party/${dependency}/upstream-CMakeLists.txt")
+  if(NOT EXISTS "${SAFEX_ROOT}/third_party/${dependency}/CMakeLists.txt")
     message(FATAL_ERROR
       "Missing source-only third_party/${dependency}. Run bun scripts/setup-safex.ts first.")
   endif()
@@ -75,6 +75,36 @@ add_subdirectory("${SAFEX_ROOT}/third_party/SDL" "${CMAKE_CURRENT_BINARY_DIR}/th
 add_subdirectory("${SAFEX_ROOT}/third_party/SDL_image" "${CMAKE_CURRENT_BINARY_DIR}/third_party/SDL_image" EXCLUDE_FROM_ALL)
 add_subdirectory("${SAFEX_ROOT}/third_party/freetype" "${CMAKE_CURRENT_BINARY_DIR}/third_party/freetype" EXCLUDE_FROM_ALL)
 add_subdirectory("${SAFEX_ROOT}/third_party/quickjs" "${CMAKE_CURRENT_BINARY_DIR}/third_party/quickjs" EXCLUDE_FROM_ALL)
+add_subdirectory("${SAFEX_ROOT}/third_party/mbedtls" "${CMAKE_CURRENT_BINARY_DIR}/third_party/mbedtls" EXCLUDE_FROM_ALL)
+
+# curl's FindMbedTLS module can use the targets built immediately above.
+set(MBEDTLS_INCLUDE_DIR "${SAFEX_ROOT}/third_party/mbedtls/include")
+set(MBEDTLS_INCLUDE_DIRS "${MBEDTLS_INCLUDE_DIR}")
+set(MBEDTLS_LIBRARY mbedtls)
+set(MBEDX509_LIBRARY mbedx509)
+set(MBEDCRYPTO_LIBRARY mbedcrypto)
+set(MBEDTLS_LIBRARIES mbedtls mbedx509 mbedcrypto)
+set(MBEDTLS_FOUND TRUE)
+
+# Keep curl small and make TLS available on every supported native platform.
+set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+set(CURL_ENABLE_EXPORT_TARGET OFF CACHE BOOL "" FORCE)
+set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(CURL_USE_MBEDTLS ON CACHE BOOL "" FORCE)
+set(CURL_USE_PKGCONFIG OFF CACHE BOOL "" FORCE)
+set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+set(CURL_USE_LIBSSH OFF CACHE BOOL "" FORCE)
+set(CURL_USE_WOLFSSH OFF CACHE BOOL "" FORCE)
+set(CURL_USE_GSASL OFF CACHE BOOL "" FORCE)
+set(CURL_USE_GSSAPI OFF CACHE BOOL "" FORCE)
+set(CURL_ZLIB OFF CACHE BOOL "" FORCE)
+set(CURL_BROTLI OFF CACHE BOOL "" FORCE)
+set(CURL_ZSTD OFF CACHE BOOL "" FORCE)
+set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+add_subdirectory("${SAFEX_ROOT}/third_party/curl" "${CMAKE_CURRENT_BINARY_DIR}/third_party/curl" EXCLUDE_FROM_ALL)
 
 set(FREETYPE_TARGET "")
 
@@ -92,6 +122,7 @@ set(JS_SDL_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
   ${SAFEX_ROOT}/src/engine.c
   ${SAFEX_ROOT}/src/js_sdl3.c
+  ${SAFEX_ROOT}/src/js_network.c
 )
 
 if(ENABLE_BOX2D)
@@ -145,6 +176,7 @@ target_link_libraries(
   SDL3_image::SDL3_image
   ${FREETYPE_TARGET}
   ${QUICKJS_TARGET}
+  libcurl
 )
 
 target_compile_definitions(${JS_SDL_TARGET} PRIVATE
@@ -189,6 +221,7 @@ if(BUILD_TESTING)
   set(JS_SDL_TEST_SOURCES
     ${SAFEX_ROOT}/tests/native_binding_tests.c
     ${SAFEX_ROOT}/src/js_sdl3.c
+    ${SAFEX_ROOT}/src/js_network.c
   )
 
   if(ENABLE_BOX2D)
@@ -204,6 +237,7 @@ if(BUILD_TESTING)
     SDL3_image::SDL3_image
     ${FREETYPE_TARGET}
     ${QUICKJS_TARGET}
+    libcurl
   )
 
   if(BOX2D_TARGET)
