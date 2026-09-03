@@ -123,6 +123,8 @@ set(JS_SDL_SOURCES
   ${SAFEX_ROOT}/src/engine.c
   ${SAFEX_ROOT}/src/js_sdl3.c
   ${SAFEX_ROOT}/src/js_network.c
+  ${SAFEX_ROOT}/src/js_rest_client.c
+  ${SAFEX_ROOT}/src/js_websocket_client.c
 )
 
 if(ENABLE_BOX2D)
@@ -222,6 +224,8 @@ if(BUILD_TESTING)
     ${SAFEX_ROOT}/tests/native_binding_tests.c
     ${SAFEX_ROOT}/src/js_sdl3.c
     ${SAFEX_ROOT}/src/js_network.c
+    ${SAFEX_ROOT}/src/js_rest_client.c
+    ${SAFEX_ROOT}/src/js_websocket_client.c
   )
 
   if(ENABLE_BOX2D)
