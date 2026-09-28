@@ -254,6 +254,7 @@ if(BUILD_TESTING)
   endif()
 
   target_compile_definitions(js_sdl3_native_tests PRIVATE
+    JS_SDL_TESTING=1
     JS_SDL_STORAGE_ORGANIZATION="SafeEngine"
     JS_SDL_STORAGE_APP="com.safeengine.jssdl.tests"
   )

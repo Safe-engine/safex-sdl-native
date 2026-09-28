@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <SDL3/SDL.h>
@@ -413,6 +414,126 @@ static void test_coordinate_conversion_without_renderer(void)
             fabsf(event.motion.y - 25.0f) < 0.001f);
 }
 
+static SDL_Texture *create_solid_texture(SDL_Renderer *renderer, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
+{
+    SDL_Surface *surface = SDL_CreateSurface(1, 1, SDL_PIXELFORMAT_RGBA32);
+    if (!surface) return NULL;
+    SDL_WriteSurfacePixel(surface, 0, 0, r, g, b, a);
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_DestroySurface(surface);
+    return texture;
+}
+
+static void expect_pixel(
+    const char *label, SDL_Surface *surface, int x, int r, int g, int b)
+{
+    Uint8 pr = 0, pg = 0, pb = 0, pa = 0;
+    SDL_ReadSurfacePixel(surface, x, 0, &pr, &pg, &pb, &pa);
+    if (abs(pr - r) <= 3 && abs(pg - g) <= 3 && abs(pb - b) <= 3) return;
+    fprintf(
+        stderr,
+        "FAIL: %s: expected (%d,%d,%d), got (%d,%d,%d)\n",
+        label, r, g, b, pr, pg, pb);
+    failures++;
+}
+
+static void expect_blend_mode(const char *label, SDL_Texture *texture, SDL_BlendMode expected)
+{
+    SDL_BlendMode actual = SDL_BLENDMODE_INVALID;
+    SDL_GetTextureBlendMode(texture, &actual);
+    if (actual == expected) return;
+    fprintf(stderr, "FAIL: %s: expected blend 0x%x, got 0x%x\n", label, expected, actual);
+    failures++;
+}
+
+/*
+ * Draws command-buffer primitives over the clear colour (9,15,29) and checks
+ * they match the web renderer: the high bit of a texture id means additive, and
+ * PMA textures blend premultiplied. SDL's software renderer cannot rasterise
+ * premultiplied geometry, so PMA cases check the blend mode chosen instead.
+ */
+static void test_command_buffer_blend_modes(JSContext *ctx)
+{
+    SDL_Surface *target = SDL_CreateSurface(6, 1, SDL_PIXELFORMAT_RGBA32);
+    SDL_Renderer *renderer = target ? SDL_CreateSoftwareRenderer(target) : NULL;
+    if (!renderer) {
+        fprintf(stderr, "FAIL: software renderer: %s\n", SDL_GetError());
+        failures++;
+        return;
+    }
+    js_sdl3_test_set_renderer(renderer);
+    SDL_Texture *straight_texture = create_solid_texture(renderer, 200, 0, 0, 255);
+    SDL_Texture *pma_texture = create_solid_texture(renderer, 64, 64, 64, 128);
+    int straight = js_sdl3_test_register_texture(straight_texture, 1, 1, false);
+    int pma = js_sdl3_test_register_texture(pma_texture, 1, 1, true);
+
+    JSValue module = eval_js(
+        ctx,
+        "import { clear, present, submitCommandBuffer } from 'sdl3';"
+        "globalThis.ADD = 0x80000000;"
+        "globalThis.sprite = (id, x) => ({ op: 1, uints: [id >>> 0, 0xffffffff],"
+        "  floats: [x, 0, 1, 1, 0, 0, 0, 0, 0] });"
+        "globalThis.quad = (id, x) => ({ op: 2, uints: [id >>> 0, 0xffffffff],"
+        "  floats: [x, 0, 0, 0, x + 1, 0, 1, 0, x, 1, 0, 1, x + 1, 1, 1, 1] });"
+        "globalThis.mesh = (id, x) => ({ op: 3, uints: [id >>> 0, 0xffffffff, 4, 6],"
+        "  floats: [0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, x, 0, 1, 1, 1, 0],"
+        "  shorts: [0, 1, 2, 2, 1, 3] });"
+        "globalThis.affineMesh = (id, a, b, c, d, tx, ty) => ({ op: 9, uints: [id >>> 0, 0xffffffff, 4, 6],"
+        "  floats: [0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, a, b, c, d, tx, ty],"
+        "  shorts: [0, 1, 2, 2, 1, 3] });"
+        "globalThis.drawFrame = (draws) => {"
+        "  clear();"
+        "  submitCommandBuffer({"
+        "    commands: new Int32Array([...draws.map(d => d.op), 0]),"
+        "    uintBuffer: new Uint32Array(draws.flatMap(d => d.uints)),"
+        "    floatBuffer: new Float32Array(draws.flatMap(d => d.floats)),"
+        "    shortBuffer: new Uint16Array(draws.flatMap(d => d.shorts ?? [])),"
+        "  });"
+        "  present();"
+        "};",
+        JS_EVAL_TYPE_MODULE);
+    JS_FreeValue(ctx, module);
+
+    char source[512];
+    snprintf(
+        source, sizeof(source),
+        "drawFrame([sprite(%d, 0), sprite(%d | ADD, 1), quad(%d | ADD, 4), mesh(%d | ADD, 5)])",
+        straight, straight, straight, straight);
+    JS_FreeValue(ctx, eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL));
+    expect_pixel("straight sprite, normal blend", target, 0, 200, 0, 0);
+    expect_pixel("straight sprite, additive blend", target, 1, 209, 15, 29);
+    expect_pixel("straight quad, additive blend", target, 4, 209, 15, 29);
+    expect_pixel("straight mesh, additive blend", target, 5, 209, 15, 29);
+
+    /* Affine mesh: the unit square translated to x=2 and stretched to 2px wide. */
+    snprintf(source, sizeof(source), "drawFrame([affineMesh(%d, 2, 0, 0, 1, 2, 0)])", straight);
+    JS_FreeValue(ctx, eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL));
+    expect_pixel("affine mesh leaves pixel 1 untouched", target, 1, 9, 15, 29);
+    expect_pixel("affine mesh covers pixel 2", target, 2, 200, 0, 0);
+    expect_pixel("affine mesh covers pixel 3", target, 3, 200, 0, 0);
+    expect_pixel("affine mesh stops before pixel 4", target, 4, 9, 15, 29);
+
+    snprintf(source, sizeof(source), "drawFrame([sprite(%d, 2)])", pma);
+    JS_FreeValue(ctx, eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL));
+    expect_blend_mode("PMA sprite blends premultiplied", pma_texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+
+    snprintf(source, sizeof(source), "drawFrame([sprite(%d | ADD, 3)])", pma);
+    JS_FreeValue(ctx, eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL));
+    expect_blend_mode("additive PMA sprite adds premultiplied", pma_texture, SDL_BLENDMODE_ADD_PREMULTIPLIED);
+
+    snprintf(source, sizeof(source), "drawFrame([sprite(%d, 0)])", straight);
+    JS_FreeValue(ctx, eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL));
+    expect_blend_mode("straight sprite returns to normal blend", straight_texture, SDL_BLENDMODE_BLEND);
+
+    js_sdl3_test_unregister_texture(straight);
+    js_sdl3_test_unregister_texture(pma);
+    js_sdl3_test_set_renderer(NULL);
+    SDL_DestroyTexture(straight_texture);
+    SDL_DestroyTexture(pma_texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroySurface(target);
+}
+
 static void test_box2d_module_registration(JSContext *ctx)
 {
 #ifdef JS_SDL_ENABLE_BOX2D_MODULE
@@ -522,6 +643,7 @@ int main(void)
     test_async_await(ctx);
     test_network_bindings(ctx);
     test_box2d_module_registration(ctx);
+    test_command_buffer_blend_modes(ctx);
     test_window_size_defaults();
     test_coordinate_conversion_without_renderer();
     js_sdl3_shutdown(ctx);

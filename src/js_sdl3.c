@@ -68,6 +68,7 @@ static int *g_mesh_indices = NULL;
 static int g_mesh_vertex_capacity = 0;
 static int g_mesh_index_capacity = 0;
 static SDL_Texture *g_batch_texture = NULL;
+static SDL_BlendMode g_batch_blend = SDL_BLENDMODE_BLEND;
 static int g_batch_vertex_count = 0;
 static int g_batch_index_count = 0;
 static SDL_Vertex *g_input_vertices = NULL;
@@ -2358,6 +2359,9 @@ static void flush_draw_batch(void)
 {
   if (g_batch_vertex_count == 0)
     return;
+  // Blend mode is texture state in SDL, so apply the batch's mode right before drawing.
+  if (g_batch_texture)
+    SDL_SetTextureBlendMode(g_batch_texture, g_batch_blend);
   SDL_RenderGeometry(
       g_renderer, g_batch_texture, g_mesh_vertices, g_batch_vertex_count,
       g_mesh_indices, g_batch_index_count);
@@ -2369,12 +2373,14 @@ static void flush_draw_batch(void)
 
 static bool append_draw_batch(
     SDL_Texture *texture,
+    SDL_BlendMode blend,
     const SDL_Vertex *vertices,
     int vertex_count,
     const int *indices,
     int index_count)
 {
-  if (g_batch_vertex_count > 0 && g_batch_texture != texture)
+  if (g_batch_vertex_count > 0 &&
+      (g_batch_texture != texture || g_batch_blend != blend))
     flush_draw_batch();
   if (!reserve_draw_batch(
           g_batch_vertex_count + vertex_count,
@@ -2390,10 +2396,40 @@ static bool append_draw_batch(
     g_mesh_indices[g_batch_index_count + i] = indices[i] + vertex_offset;
   }
   g_batch_texture = texture;
+  g_batch_blend = blend;
   g_batch_vertex_count += vertex_count;
   g_batch_index_count += index_count;
   g_vertices += vertex_count;
   return true;
+}
+
+/* Command-buffer texture ids carry the additive flag in their high bit. */
+#define TEXTURE_ADDITIVE_FLAG 0x80000000u
+
+/* Match the web renderer: additive draws add, PMA textures blend premultiplied. */
+static SDL_BlendMode texture_blend_mode(int id, bool additive)
+{
+  bool pma = g_textures[id].pma;
+  if (additive)
+    return pma ? SDL_BLENDMODE_ADD_PREMULTIPLIED : SDL_BLENDMODE_ADD;
+  return pma ? SDL_BLENDMODE_BLEND_PREMULTIPLIED : SDL_BLENDMODE_BLEND;
+}
+
+/*
+ * Vertex colour for a texture. SDL's GPU backends only multiply texel by vertex
+ * colour, so for PMA textures the RGB must be scaled by alpha up front.
+ */
+static SDL_FColor texture_vertex_color(int id, double red, double green, double blue, double alpha)
+{
+  float a = (float)(SDL_clamp(alpha, 0, 255) / 255.0);
+  float rgb_scale = g_textures[id].pma ? a : 1.0f;
+  SDL_FColor color = {
+      (float)(SDL_clamp(red, 0, 255) / 255.0) * rgb_scale,
+      (float)(SDL_clamp(green, 0, 255) / 255.0) * rgb_scale,
+      (float)(SDL_clamp(blue, 0, 255) / 255.0) * rgb_scale,
+      a,
+  };
+  return color;
 }
 
 static JSValue js_clear(
@@ -2420,7 +2456,8 @@ static bool append_texture_region(
     double dx, double dy, double dw, double dh,
     double angle, double center_x, double center_y,
     int flip_x, int flip_y,
-    double red, double green, double blue, double alpha)
+    double red, double green, double blue, double alpha,
+    bool additive)
 {
   double radians = angle * SDL_PI_D / 180.0;
   double cosine = SDL_cos(radians);
@@ -2431,12 +2468,7 @@ static bool append_texture_region(
       {0, dh},
       {dw, dh},
   };
-  SDL_FColor color = {
-      (float)(SDL_clamp(red, 0, 255) / 255.0),
-      (float)(SDL_clamp(green, 0, 255) / 255.0),
-      (float)(SDL_clamp(blue, 0, 255) / 255.0),
-      (float)(SDL_clamp(alpha, 0, 255) / 255.0),
-  };
+  SDL_FColor color = texture_vertex_color(id, red, green, blue, alpha);
   double u0 = sx / g_textures[id].width;
   double v0 = sy / g_textures[id].height;
   double u1 = (sx + sw) / g_textures[id].width;
@@ -2469,7 +2501,8 @@ static bool append_texture_region(
   }
   const int indices[6] = {0, 1, 2, 2, 1, 3};
   return append_draw_batch(
-      g_textures[id].texture, vertices, 4, indices, 6);
+      g_textures[id].texture, texture_blend_mode(id, additive),
+      vertices, 4, indices, 6);
 }
 
 /* --- Binding: drawTexture(id, x, y) --- */
@@ -2494,7 +2527,7 @@ static JSValue js_drawTexture(
       0, 0, g_textures[id].width, g_textures[id].height,
       dx, dy, 64, 64,
       0, 0, 0, 0, 0,
-      255, 255, 255, 255);
+      255, 255, 255, 255, false);
   return JS_UNDEFINED;
 }
 
@@ -2536,7 +2569,7 @@ static JSValue js_drawTextureRotated(
       0, 0, g_textures[id].width, g_textures[id].height,
       dx, dy, dw, dh,
       angle, centerX, centerY, flipX, flipY,
-      red, green, blue, alpha);
+      red, green, blue, alpha, false);
   return JS_UNDEFINED;
 }
 
@@ -2582,7 +2615,7 @@ static JSValue js_drawTextureRegionRotated(
       sx, sy, sw, sh,
       dx, dy, dw, dh,
       angle, centerX, centerY, flipX, flipY,
-      red, green, blue, alpha);
+      red, green, blue, alpha, false);
   return JS_UNDEFINED;
 }
 
@@ -2614,12 +2647,7 @@ static JSValue js_drawTextureQuad(
 
   if (!valid_texture_id(id))
     return JS_UNDEFINED;
-  SDL_FColor color = {
-      (float)(SDL_clamp(red, 0, 255) / 255.0),
-      (float)(SDL_clamp(green, 0, 255) / 255.0),
-      (float)(SDL_clamp(blue, 0, 255) / 255.0),
-      (float)(SDL_clamp(alpha, 0, 255) / 255.0),
-  };
+  SDL_FColor color = texture_vertex_color(id, red, green, blue, alpha);
   SDL_Vertex vertices[4];
   for (int i = 0; i < 4; i++)
   {
@@ -2631,7 +2659,7 @@ static JSValue js_drawTextureQuad(
     vertices[i].tex_coord.y = (float)values[offset + 3];
   }
   int indices[6] = {0, 1, 2, 2, 1, 3};
-  append_draw_batch(g_textures[id].texture, vertices, 4, indices, 6);
+  append_draw_batch(g_textures[id].texture, texture_blend_mode(id, false), vertices, 4, indices, 6);
   return JS_UNDEFINED;
 }
 
@@ -2705,12 +2733,7 @@ static JSValue js_drawTextureMesh(
   if (vertex_count <= 0 || index_count <= 0)
     goto cleanup;
 
-  SDL_FColor color = {
-      (float)(SDL_clamp(red, 0, 255) / 255.0),
-      (float)(SDL_clamp(green, 0, 255) / 255.0),
-      (float)(SDL_clamp(blue, 0, 255) / 255.0),
-      (float)(SDL_clamp(alpha, 0, 255) / 255.0),
-  };
+  SDL_FColor color = texture_vertex_color(id, red, green, blue, alpha);
   const float *position_data = (const float *)(positions + position_offset);
   const float *uv_data = (const float *)(uvs + uv_offset);
   const uint16_t *index_data = (const uint16_t *)(indices + index_offset);
@@ -2740,7 +2763,7 @@ static JSValue js_drawTextureMesh(
     g_input_indices[i] = index_data[i];
   }
   append_draw_batch(
-      g_textures[id].texture, g_input_vertices, vertex_count,
+      g_textures[id].texture, texture_blend_mode(id, false), g_input_vertices, vertex_count,
       g_input_indices, index_count);
 
 cleanup:
@@ -2783,7 +2806,7 @@ static JSValue js_drawRect(
       {{(float)(x + width), (float)(y + height)}, color, {0, 0}},
   };
   const int indices[6] = {0, 1, 2, 2, 1, 3};
-  append_draw_batch(NULL, vertices, 4, indices, 6);
+  append_draw_batch(NULL, SDL_BLENDMODE_BLEND, vertices, 4, indices, 6);
   return JS_UNDEFINED;
 }
 
@@ -3271,7 +3294,9 @@ static JSValue js_submitCommandBuffer(
       { // CMD_DRAW_SPRITE
         if (uint_count - uint_idx < 2 || float_count - float_idx < 9)
           break;
-        int id = (int)uints[uint_idx++];
+        uint32_t texture_word = uints[uint_idx++];
+        bool additive = (texture_word & TEXTURE_ADDITIVE_FLAG) != 0;
+        int id = (int)(texture_word & ~TEXTURE_ADDITIVE_FLAG);
         uint32_t c = uints[uint_idx++];
         double dx = floats[float_idx++];
         double dy = floats[float_idx++];
@@ -3290,14 +3315,16 @@ static JSValue js_submitCommandBuffer(
 
         if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture)
         {
-          append_texture_region(id, 0, 0, g_textures[id].width, g_textures[id].height, dx, dy, dw, dh, angle, cx, cy, fx, fy, r, g, b, a);
+          append_texture_region(id, 0, 0, g_textures[id].width, g_textures[id].height, dx, dy, dw, dh, angle, cx, cy, fx, fy, r, g, b, a, additive);
         }
       }
       else if (op == 8)
       { // CMD_DRAW_REGION
         if (uint_count - uint_idx < 2 || float_count - float_idx < 13)
           break;
-        int id = (int)uints[uint_idx++];
+        uint32_t texture_word = uints[uint_idx++];
+        bool additive = (texture_word & TEXTURE_ADDITIVE_FLAG) != 0;
+        int id = (int)(texture_word & ~TEXTURE_ADDITIVE_FLAG);
         uint32_t c = uints[uint_idx++];
         double sx = floats[float_idx++];
         double sy = floats[float_idx++];
@@ -3320,14 +3347,16 @@ static JSValue js_submitCommandBuffer(
 
         if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture)
         {
-          append_texture_region(id, sx, sy, sw, sh, dx, dy, dw, dh, angle, cx, cy, fx, fy, r, g, b, a);
+          append_texture_region(id, sx, sy, sw, sh, dx, dy, dw, dh, angle, cx, cy, fx, fy, r, g, b, a, additive);
         }
       }
       else if (op == 2)
       { // CMD_DRAW_QUAD
         if (uint_count - uint_idx < 2 || float_count - float_idx < 16)
           break;
-        int id = (int)uints[uint_idx++];
+        uint32_t texture_word = uints[uint_idx++];
+        bool additive = (texture_word & TEXTURE_ADDITIVE_FLAG) != 0;
+        int id = (int)(texture_word & ~TEXTURE_ADDITIVE_FLAG);
         uint32_t c = uints[uint_idx++];
         double x0 = floats[float_idx++], y0 = floats[float_idx++];
         double u0 = floats[float_idx++], v0 = floats[float_idx++];
@@ -3345,8 +3374,7 @@ static JSValue js_submitCommandBuffer(
 
         if (id >= 0 && id < MAX_TEXTURES && g_textures[id].texture)
         {
-          SDL_FColor color = {
-              (float)(r / 255.0), (float)(g / 255.0), (float)(b / 255.0), (float)(a / 255.0)};
+          SDL_FColor color = texture_vertex_color(id, r, g, b, a);
           SDL_Vertex vertices[4] = {
               {{(float)x0, (float)y0}, color, {(float)u0, (float)v0}},
               {{(float)x1, (float)y1}, color, {(float)u1, (float)v1}},
@@ -3354,14 +3382,16 @@ static JSValue js_submitCommandBuffer(
               {{(float)x3, (float)y3}, color, {(float)u3, (float)v3}},
           };
           const int indices[6] = {0, 1, 2, 2, 1, 3};
-          append_draw_batch(g_textures[id].texture, vertices, 4, indices, 6);
+          append_draw_batch(g_textures[id].texture, texture_blend_mode(id, additive), vertices, 4, indices, 6);
         }
       }
-      else if (op == 3)
-      { // CMD_DRAW_MESH
+      else if (op == 3 || op == 9)
+      { // CMD_DRAW_MESH, CMD_DRAW_MESH_AFFINE
         if (uint_count - uint_idx < 4)
           break;
-        int id = (int)uints[uint_idx++];
+        uint32_t texture_word = uints[uint_idx++];
+        bool additive = (texture_word & TEXTURE_ADDITIVE_FLAG) != 0;
+        int id = (int)(texture_word & ~TEXTURE_ADDITIVE_FLAG);
         uint32_t c = uints[uint_idx++];
         uint32_t v_count_raw = uints[uint_idx++];
         uint32_t i_count_raw = uints[uint_idx++];
@@ -3377,9 +3407,29 @@ static JSValue js_submitCommandBuffer(
         float_idx += v_count * 2;
         const float *uv_ptr = &floats[float_idx];
         float_idx += v_count * 2;
-        double tx = floats[float_idx++], ty = floats[float_idx++];
-        double sx = floats[float_idx++], sy = floats[float_idx++];
-        double cosine = floats[float_idx++], sine = floats[float_idx++];
+        /* Both layouts end in six floats, folded into one affine matrix:
+         * op 3 carries (tx, ty, sx, sy, cos, sin), op 9 carries (a, b, c, d, tx, ty). */
+        double ma, mb, mc, md, mtx, mty;
+        if (op == 3)
+        {
+          mtx = floats[float_idx++];
+          mty = floats[float_idx++];
+          double sx = floats[float_idx++], sy = floats[float_idx++];
+          double cosine = floats[float_idx++], sine = floats[float_idx++];
+          ma = sx * cosine;
+          mb = sx * sine;
+          mc = -sy * sine;
+          md = sy * cosine;
+        }
+        else
+        {
+          ma = floats[float_idx++];
+          mb = floats[float_idx++];
+          mc = floats[float_idx++];
+          md = floats[float_idx++];
+          mtx = floats[float_idx++];
+          mty = floats[float_idx++];
+        }
 
         const uint16_t *idx_ptr = shorts ? &shorts[short_idx] : NULL;
         short_idx += i_count;
@@ -3393,19 +3443,13 @@ static JSValue js_submitCommandBuffer(
         {
           if (reserve_input_mesh(v_count, i_count))
           {
-            const float alpha = (float)(a / 255.0);
-            const float rgb_multiplier = g_textures[id].pma ? alpha : 1.0f;
-            SDL_FColor color = {
-                (float)(r / 255.0) * rgb_multiplier,
-                (float)(g / 255.0) * rgb_multiplier,
-                (float)(b / 255.0) * rgb_multiplier,
-                alpha};
+            SDL_FColor color = texture_vertex_color(id, r, g, b, a);
             for (int i = 0; i < v_count; i++)
             {
-              double x = pos_ptr[i * 2] * sx;
-              double y = pos_ptr[i * 2 + 1] * sy;
-              g_input_vertices[i].position.x = (float)(tx + x * cosine - y * sine);
-              g_input_vertices[i].position.y = (float)(ty + x * sine + y * cosine);
+              double x = pos_ptr[i * 2];
+              double y = pos_ptr[i * 2 + 1];
+              g_input_vertices[i].position.x = (float)(ma * x + mc * y + mtx);
+              g_input_vertices[i].position.y = (float)(mb * x + md * y + mty);
               g_input_vertices[i].color = color;
               g_input_vertices[i].tex_coord.x = uv_ptr[i * 2];
               g_input_vertices[i].tex_coord.y = uv_ptr[i * 2 + 1];
@@ -3414,7 +3458,7 @@ static JSValue js_submitCommandBuffer(
             {
               g_input_indices[i] = idx_ptr[i];
             }
-            append_draw_batch(g_textures[id].texture, g_input_vertices, v_count, g_input_indices, i_count);
+            append_draw_batch(g_textures[id].texture, texture_blend_mode(id, additive), g_input_vertices, v_count, g_input_indices, i_count);
           }
         }
       }
@@ -3443,7 +3487,7 @@ static JSValue js_submitCommandBuffer(
             {{(float)(x + w), (float)(y + h)}, color, {0, 0}},
         };
         const int indices[6] = {0, 1, 2, 2, 1, 3};
-        append_draw_batch(NULL, vertices, 4, indices, 6);
+        append_draw_batch(NULL, SDL_BLENDMODE_BLEND, vertices, 4, indices, 6);
       }
       else if (op == 5)
       { // CMD_DRAW_LINE
@@ -4398,3 +4442,34 @@ void js_convert_event_to_render_coordinates(SDL_Event *event)
     SDL_ConvertEventToRenderCoordinates(g_renderer, event);
   }
 }
+
+#ifdef JS_SDL_TESTING
+void js_sdl3_test_set_renderer(SDL_Renderer *renderer)
+{
+  g_renderer = renderer;
+  reset_render_state_cache();
+}
+
+int js_sdl3_test_register_texture(SDL_Texture *texture, int width, int height, bool pma)
+{
+  int id = find_free_texture_slot();
+  if (id < 0)
+    return -1;
+  SDL_zero(g_textures[id]);
+  g_textures[id].texture = texture;
+  g_textures[id].refs = 1;
+  g_textures[id].width = width;
+  g_textures[id].height = height;
+  g_textures[id].pma = pma;
+  return id;
+}
+
+void js_sdl3_test_unregister_texture(int id)
+{
+  if (!valid_texture_id(id))
+    return;
+  if (g_batch_texture == g_textures[id].texture)
+    flush_draw_batch();
+  SDL_zero(g_textures[id]);
+}
+#endif

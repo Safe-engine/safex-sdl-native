@@ -49,6 +49,13 @@ int  js_get_win_w(void);
 int  js_get_win_h(void);
 void js_convert_event_to_render_coordinates(SDL_Event *event);
 
+#ifdef JS_SDL_TESTING
+/* Test-only hooks: draw through an offscreen renderer with hand-made textures. */
+void js_sdl3_test_set_renderer(SDL_Renderer *renderer);
+int  js_sdl3_test_register_texture(SDL_Texture *texture, int width, int height, bool pma);
+void js_sdl3_test_unregister_texture(int id);
+#endif
+
 typedef struct FrameMetrics {
     Uint64 logic_ns;
     Uint64 js_update_ns;
