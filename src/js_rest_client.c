@@ -308,7 +308,7 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val, int argc, JSValue
         JSValue body = JS_GetPropertyStr(ctx, argv[1], "body");
         if (!JS_IsUndefined(body) && !JS_IsNull(body)) {
             size_t length = 0;
-            uint8_t *bytes = JS_GetArrayBuffer(ctx, &length, body);
+            uint8_t *bytes = JS_IsArrayBuffer(body) ? JS_GetArrayBuffer(ctx, &length, body) : NULL;
             const char *text = bytes ? NULL : JS_ToCStringLen(ctx, &length, body);
             if (bytes || text) {
                 request->request_body = SDL_malloc(length);

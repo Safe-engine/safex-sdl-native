@@ -242,6 +242,7 @@ if(BUILD_TESTING)
     ${FREETYPE_TARGET}
     ${QUICKJS_TARGET}
     libcurl
+    mbedcrypto
   )
 
   if(BOX2D_TARGET)

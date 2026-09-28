@@ -15,15 +15,23 @@ typedef struct WsEvent {
     struct WsEvent *next;
 } WsEvent;
 
+typedef struct WsOutgoing {
+    uint8_t *data;
+    size_t len;
+    size_t offset;
+    bool binary;
+    struct WsOutgoing *next;
+} WsOutgoing;
+
 typedef struct WebSocketState {
     JSValue object;
     SDL_Thread *thread;
     SDL_Mutex *mutex;
     char *url;
-    uint8_t *pending_send;
-    size_t pending_send_len;
-    bool pending_send_binary;
+    WsOutgoing *outgoing_head;
+    WsOutgoing *outgoing_tail;
     bool closing;
+    bool closed;
     WsEvent *events_head;
     WsEvent *events_tail;
     struct WebSocketState *next;
@@ -51,6 +59,34 @@ static void ws_push_event(WebSocketState *socket, WsEventType type, const char *
     SDL_UnlockMutex(socket->mutex);
 }
 
+/* Sends queued messages in order. Returns false on a fatal send error. */
+static bool ws_flush_outgoing(WebSocketState *socket, CURL *curl)
+{
+    while (true) {
+        SDL_LockMutex(socket->mutex);
+        WsOutgoing *outgoing = socket->outgoing_head;
+        SDL_UnlockMutex(socket->mutex);
+        if (!outgoing) return true;
+        size_t sent = 0;
+        CURLcode result = curl_ws_send(
+            curl, outgoing->data + outgoing->offset, outgoing->len - outgoing->offset,
+            &sent, 0, outgoing->binary ? CURLWS_BINARY : CURLWS_TEXT);
+        if (result != CURLE_OK && result != CURLE_AGAIN) {
+            ws_push_event(socket, WS_EVENT_ERROR, curl_easy_strerror(result), NULL, 0, false);
+            return false;
+        }
+        outgoing->offset += sent;
+        /* Retry the remainder on the next loop iteration. */
+        if (outgoing->offset < outgoing->len) return true;
+        SDL_LockMutex(socket->mutex);
+        socket->outgoing_head = outgoing->next;
+        if (!socket->outgoing_head) socket->outgoing_tail = NULL;
+        SDL_UnlockMutex(socket->mutex);
+        SDL_free(outgoing->data);
+        SDL_free(outgoing);
+    }
+}
+
 static int websocket_worker(void *userdata)
 {
     WebSocketState *socket = userdata;
@@ -75,22 +111,9 @@ static int websocket_worker(void *userdata)
     while (true) {
         SDL_LockMutex(socket->mutex);
         bool closing = socket->closing;
-        uint8_t *outgoing = socket->pending_send;
-        size_t outgoing_len = socket->pending_send_len;
-        bool outgoing_binary = socket->pending_send_binary;
-        socket->pending_send = NULL;
-        socket->pending_send_len = 0;
         SDL_UnlockMutex(socket->mutex);
         if (closing) break;
-        if (outgoing) {
-            size_t sent = 0;
-            result = curl_ws_send(curl, outgoing, outgoing_len, &sent, 0, outgoing_binary ? CURLWS_BINARY : CURLWS_TEXT);
-            SDL_free(outgoing);
-            if (result != CURLE_OK && result != CURLE_AGAIN) {
-                ws_push_event(socket, WS_EVENT_ERROR, curl_easy_strerror(result), NULL, 0, false);
-                break;
-            }
-        }
+        if (!ws_flush_outgoing(socket, curl)) break;
         size_t received = 0;
         const struct curl_ws_frame *meta = NULL;
         result = curl_ws_recv(curl, buffer, sizeof(buffer), &received, &meta);
@@ -120,22 +143,32 @@ static void websocket_finalizer(JSRuntime *runtime, JSValue value)
 
 static JSValue js_websocket_send(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
-    WebSocketState *socket = JS_GetOpaque2(ctx, this_val, g_websocket_class_id);
-    if (!socket) return JS_EXCEPTION;
+    if (JS_GetClassID(this_val) != g_websocket_class_id) return JS_ThrowTypeError(ctx, "not a WebSocket");
+    WebSocketState *socket = JS_GetOpaque(this_val, g_websocket_class_id);
+    /* Closed sockets discard data, like browsers do. */
+    if (!socket) return JS_UNDEFINED;
     if (argc < 1) return JS_ThrowTypeError(ctx, "WebSocket.send requires data");
     size_t length = 0;
-    uint8_t *bytes = JS_GetArrayBuffer(ctx, &length, argv[0]);
-    const char *text = bytes ? NULL : JS_ToCStringLen(ctx, &length, argv[0]);
-    if (!bytes && !text) return JS_EXCEPTION;
-    uint8_t *copy = SDL_malloc(length);
-    if (copy) SDL_memcpy(copy, bytes ? bytes : (const uint8_t *)text, length);
+    bool binary = JS_IsArrayBuffer(argv[0]);
+    uint8_t *bytes = binary ? JS_GetArrayBuffer(ctx, &length, argv[0]) : NULL;
+    const char *text = binary ? NULL : JS_ToCStringLen(ctx, &length, argv[0]);
+    if (binary ? (!bytes && JS_HasException(ctx)) : !text) return JS_EXCEPTION;
+    WsOutgoing *outgoing = SDL_calloc(1, sizeof(*outgoing));
+    uint8_t *copy = length ? SDL_malloc(length) : NULL;
+    if (copy) SDL_memcpy(copy, binary ? bytes : (const uint8_t *)text, length);
     JS_FreeCString(ctx, text);
-    if (!copy && length) return JS_ThrowOutOfMemory(ctx);
+    if (!outgoing || (!copy && length)) {
+        SDL_free(outgoing);
+        SDL_free(copy);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    outgoing->data = copy;
+    outgoing->len = length;
+    outgoing->binary = binary;
     SDL_LockMutex(socket->mutex);
-    SDL_free(socket->pending_send);
-    socket->pending_send = copy;
-    socket->pending_send_len = length;
-    socket->pending_send_binary = bytes != NULL;
+    if (socket->outgoing_tail) socket->outgoing_tail->next = outgoing;
+    else socket->outgoing_head = outgoing;
+    socket->outgoing_tail = outgoing;
     SDL_UnlockMutex(socket->mutex);
     return JS_UNDEFINED;
 }
@@ -225,6 +258,7 @@ static void ws_pump_events(JSContext *ctx, WebSocketState *socket)
             ws_dispatch(ctx, socket, "onerror", js_event);
         } else {
             JS_SetPropertyStr(ctx, socket->object, "readyState", JS_NewInt32(ctx, 3));
+            socket->closed = true;
             ws_dispatch(ctx, socket, "onclose", js_event);
         }
         SDL_free(event->message); SDL_free(event->data); SDL_free(event);
@@ -253,9 +287,47 @@ int js_websocket_client_init(JSContext *ctx)
     return 0;
 }
 
+static void ws_destroy(JSContext *ctx, WebSocketState *socket)
+{
+    SDL_LockMutex(socket->mutex);
+    socket->closing = true;
+    SDL_UnlockMutex(socket->mutex);
+    if (socket->thread) SDL_WaitThread(socket->thread, NULL);
+    WsEvent *event = socket->events_head;
+    while (event) {
+        WsEvent *next = event->next;
+        SDL_free(event->message); SDL_free(event->data); SDL_free(event);
+        event = next;
+    }
+    WsOutgoing *outgoing = socket->outgoing_head;
+    while (outgoing) {
+        WsOutgoing *next = outgoing->next;
+        SDL_free(outgoing->data); SDL_free(outgoing);
+        outgoing = next;
+    }
+    /* The JS object can outlive the socket; detach it so later calls and the finalizer see NULL. */
+    JS_SetOpaque(socket->object, NULL);
+    JS_FreeValue(ctx, socket->object);
+    SDL_DestroyMutex(socket->mutex);
+    SDL_free(socket->url);
+    SDL_free(socket);
+}
+
 void js_websocket_client_pump(JSContext *ctx)
 {
-    for (WebSocketState *socket = g_websockets; socket; socket = socket->next) ws_pump_events(ctx, socket);
+    WebSocketState **link = &g_websockets;
+    while (*link) {
+        WebSocketState *socket = *link;
+        ws_pump_events(ctx, socket);
+        /* Event handlers may have prepended new sockets to the list. */
+        while (*link != socket) link = &(*link)->next;
+        if (socket->closed) {
+            *link = socket->next;
+            ws_destroy(ctx, socket);
+        } else {
+            link = &socket->next;
+        }
+    }
 }
 
 void js_websocket_client_shutdown(JSContext *ctx)
@@ -263,20 +335,6 @@ void js_websocket_client_shutdown(JSContext *ctx)
     while (g_websockets) {
         WebSocketState *socket = g_websockets;
         g_websockets = socket->next;
-        SDL_LockMutex(socket->mutex);
-        socket->closing = true;
-        SDL_UnlockMutex(socket->mutex);
-        if (socket->thread) SDL_WaitThread(socket->thread, NULL);
-        WsEvent *event = socket->events_head;
-        while (event) {
-            WsEvent *next = event->next;
-            SDL_free(event->message); SDL_free(event->data); SDL_free(event);
-            event = next;
-        }
-        JS_FreeValue(ctx, socket->object);
-        SDL_free(socket->pending_send);
-        SDL_DestroyMutex(socket->mutex);
-        SDL_free(socket->url);
-        SDL_free(socket);
+        ws_destroy(ctx, socket);
     }
 }

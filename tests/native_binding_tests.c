@@ -6,7 +6,18 @@
 #include <SDL3/SDL.h>
 #include <quickjs.h>
 
+#include "js_network.h"
 #include "js_sdl3.h"
+
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <mbedtls/base64.h>
+#include <mbedtls/sha1.h>
+#endif
 
 void js_run_on_main_thread(js_main_thread_fn fn, void *arg)
 {
@@ -426,6 +437,279 @@ static void test_network_bindings(JSContext *ctx)
     JS_FreeValue(ctx, value);
 }
 
+#ifndef _WIN32
+/* Minimal single-connection WebSocket server: echoes messages up to 1000
+   bytes and answers larger ones with their length as text. */
+typedef struct EchoServer {
+    int listen_fd;
+    SDL_AtomicInt client_fd;
+    int port;
+    SDL_Thread *thread;
+} EchoServer;
+
+static bool read_exact(int fd, void *buffer, size_t length)
+{
+    uint8_t *bytes = buffer;
+    while (length) {
+        ssize_t count = recv(fd, bytes, length, 0);
+        if (count <= 0) return false;
+        bytes += count;
+        length -= (size_t)count;
+    }
+    return true;
+}
+
+static bool write_all(int fd, const void *buffer, size_t length)
+{
+    const uint8_t *bytes = buffer;
+    while (length) {
+        ssize_t count = send(fd, bytes, length, 0);
+        if (count <= 0) return false;
+        bytes += count;
+        length -= (size_t)count;
+    }
+    return true;
+}
+
+static bool send_server_frame(int fd, int opcode, const uint8_t *payload, size_t length)
+{
+    uint8_t header[4] = { (uint8_t)(0x80 | opcode) };
+    size_t header_len = 2;
+    if (length < 126) {
+        header[1] = (uint8_t)length;
+    } else {
+        header[1] = 126;
+        header[2] = (uint8_t)(length >> 8);
+        header[3] = (uint8_t)length;
+        header_len = 4;
+    }
+    return write_all(fd, header, header_len) && write_all(fd, payload, length);
+}
+
+static bool accept_websocket_handshake(int fd)
+{
+    char request[4096] = { 0 };
+    size_t used = 0;
+    while (!strstr(request, "\r\n\r\n")) {
+        if (used == sizeof(request) - 1) return false;
+        ssize_t count = recv(fd, request + used, sizeof(request) - 1 - used, 0);
+        if (count <= 0) return false;
+        used += (size_t)count;
+    }
+    const char *key = strstr(request, "Sec-WebSocket-Key: ");
+    if (!key) return false;
+    key += strlen("Sec-WebSocket-Key: ");
+    char accept_source[128];
+    int key_len = (int)strcspn(key, "\r");
+    snprintf(accept_source, sizeof(accept_source), "%.*s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key_len, key);
+    unsigned char digest[20];
+    unsigned char accept[64];
+    size_t accept_len = 0;
+    if (mbedtls_sha1((const unsigned char *)accept_source, strlen(accept_source), digest) != 0) return false;
+    if (mbedtls_base64_encode(accept, sizeof(accept) - 1, &accept_len, digest, sizeof(digest)) != 0) return false;
+    accept[accept_len] = 0;
+    char response[256];
+    int response_len = snprintf(
+        response, sizeof(response),
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n",
+        accept);
+    return write_all(fd, response, (size_t)response_len);
+}
+
+static int echo_server_thread(void *userdata)
+{
+    EchoServer *server = userdata;
+    int fd = accept(server->listen_fd, NULL, NULL);
+    if (fd < 0) return 0;
+    SDL_SetAtomicInt(&server->client_fd, fd);
+    if (!accept_websocket_handshake(fd)) {
+        close(fd);
+        return 0;
+    }
+    while (true) {
+        uint8_t header[2];
+        if (!read_exact(fd, header, sizeof(header))) break;
+        int opcode = header[0] & 0x0f;
+        uint64_t length = header[1] & 0x7f;
+        if (length == 126 || length == 127) {
+            uint8_t extended[8];
+            size_t extended_len = length == 126 ? 2 : 8;
+            if (!read_exact(fd, extended, extended_len)) break;
+            length = 0;
+            for (size_t i = 0; i < extended_len; i++) length = (length << 8) | extended[i];
+        }
+        uint8_t mask[4] = { 0 };
+        if ((header[1] & 0x80) && !read_exact(fd, mask, sizeof(mask))) break;
+        uint8_t *payload = malloc(length ? (size_t)length : 1);
+        if (!payload || !read_exact(fd, payload, (size_t)length)) {
+            free(payload);
+            break;
+        }
+        for (uint64_t i = 0; i < length; i++) payload[i] ^= mask[i % 4];
+        bool ok = true;
+        if (opcode == 1 || opcode == 2) {
+            if (length <= 1000) {
+                ok = send_server_frame(fd, opcode, payload, (size_t)length);
+            } else {
+                char text[32];
+                int text_len = snprintf(text, sizeof(text), "%llu", (unsigned long long)length);
+                ok = send_server_frame(fd, 1, (const uint8_t *)text, (size_t)text_len);
+            }
+        } else if (opcode == 8) {
+            send_server_frame(fd, 8, payload, length < 2 ? (size_t)length : 2);
+            ok = false;
+        }
+        free(payload);
+        if (!ok) break;
+    }
+    close(fd);
+    return 0;
+}
+
+static bool start_echo_server(EchoServer *server)
+{
+    SDL_SetAtomicInt(&server->client_fd, -1);
+    server->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server->listen_fd < 0) return false;
+    struct sockaddr_in address = { 0 };
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t address_len = sizeof(address);
+    if (bind(server->listen_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(server->listen_fd, 1) != 0 ||
+        getsockname(server->listen_fd, (struct sockaddr *)&address, &address_len) != 0) {
+        close(server->listen_fd);
+        return false;
+    }
+    server->port = ntohs(address.sin_port);
+    server->thread = SDL_CreateThread(echo_server_thread, "ws-echo-server", server);
+    if (!server->thread) {
+        close(server->listen_fd);
+        return false;
+    }
+    return true;
+}
+
+static void stop_echo_server(EchoServer *server)
+{
+    /* Unblock accept() or recv() if the client never finished. */
+    shutdown(server->listen_fd, SHUT_RDWR);
+    int client_fd = SDL_GetAtomicInt(&server->client_fd);
+    if (client_fd >= 0) shutdown(client_fd, SHUT_RDWR);
+    close(server->listen_fd);
+    SDL_WaitThread(server->thread, NULL);
+}
+#endif
+
+static bool eval_bool(JSContext *ctx, const char *source)
+{
+    JSValue value = eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL);
+    bool result = JS_ToBool(ctx, value);
+    JS_FreeValue(ctx, value);
+    return result;
+}
+
+static void test_network_string_payloads_leave_no_exception(JSContext *ctx)
+{
+    JSValue value = eval_js(
+        ctx,
+        "fetch('http://127.0.0.1:1/', { method: 'POST', body: 'payload' }).catch(() => {});"
+        "globalThis.stringPayloadSocket = new WebSocket('ws://127.0.0.1:1/');"
+        "stringPayloadSocket.send('queued before open');",
+        JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, value);
+    expect_true("string fetch body and WebSocket.send leave no pending exception", !JS_HasException(ctx));
+
+    Uint64 deadline = SDL_GetTicks() + 10000;
+    while (!eval_bool(ctx, "stringPayloadSocket.readyState === WebSocket.CLOSED") && SDL_GetTicks() < deadline) {
+        js_network_pump(ctx);
+        SDL_Delay(5);
+    }
+    expect_true(
+        "sending on a closed WebSocket is a no-op",
+        eval_bool(ctx, "stringPayloadSocket.send('late'); stringPayloadSocket.close(); delete globalThis.stringPayloadSocket"));
+}
+
+static void test_websocket_echo_and_release(JSContext *ctx)
+{
+#ifndef _WIN32
+    EchoServer server;
+    bool started = start_echo_server(&server);
+    expect_true("starts local WebSocket echo server", started);
+    if (!started) return;
+
+    char source[2048];
+    snprintf(
+        source, sizeof(source),
+        "globalThis.wsLog = [];"
+        "globalThis.wsDone = false;"
+        "globalThis.wsCollected = false;"
+        "globalThis.wsRegistry = new FinalizationRegistry(() => { globalThis.wsCollected = true; });"
+        "(() => {"
+        "  const ws = new WebSocket('ws://127.0.0.1:%d/');"
+        "  wsRegistry.register(ws, 0);"
+        "  ws.onopen = () => {"
+        "    ws.send('a'); ws.send('b'); ws.send('x'.repeat(100000));"
+        "    ws.send(new Uint8Array([1, 2, 3]).buffer);"
+        "  };"
+        "  ws.onmessage = (event) => {"
+        "    wsLog.push(typeof event.data === 'string' ? event.data : 'bin:' + new Uint8Array(event.data).join(','));"
+        "    if (wsLog.length === 4) ws.close();"
+        "  };"
+        "  ws.onerror = (event) => wsLog.push('error:' + event.message);"
+        "  ws.onclose = () => { globalThis.wsDone = true; };"
+        "})();",
+        server.port);
+    JSValue value = eval_js(ctx, source, JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, value);
+
+    Uint64 deadline = SDL_GetTicks() + 10000;
+    while (!eval_bool(ctx, "wsDone") && SDL_GetTicks() < deadline) {
+        js_network_pump(ctx);
+        SDL_Delay(5);
+    }
+    stop_echo_server(&server);
+
+    value = eval_js(ctx, "wsLog.join('|')", JS_EVAL_TYPE_GLOBAL);
+    const char *log = JS_ToCString(ctx, value);
+    expect_string("queued WebSocket messages are all delivered in order", log, "a|b|100000|bin:1,2,3");
+    JS_FreeCString(ctx, log);
+    JS_FreeValue(ctx, value);
+    expect_true("WebSocket onclose fires", eval_bool(ctx, "wsDone"));
+
+    JS_RunGC(JS_GetRuntime(ctx));
+    js_execute_pending_job(JS_GetRuntime(ctx));
+    expect_true("closed WebSocket is released for garbage collection", eval_bool(ctx, "wsCollected"));
+    value = eval_js(ctx, "delete globalThis.wsRegistry", JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, value);
+#else
+    (void)ctx;
+#endif
+}
+
+static void test_websocket_outlives_shutdown(void)
+{
+    JSRuntime *runtime = JS_NewRuntime();
+    JSContext *ctx = runtime ? JS_NewContext(runtime) : NULL;
+    expect_true("creates JavaScript context for WebSocket shutdown", ctx != NULL);
+    if (!ctx) {
+        if (runtime) JS_FreeRuntime(runtime);
+        return;
+    }
+
+    js_init_sdl3(ctx);
+    JSValue value = eval_js(ctx, "globalThis.keptSocket = new WebSocket('ws://127.0.0.1:1/')", JS_EVAL_TYPE_GLOBAL);
+    JS_FreeValue(ctx, value);
+    js_sdl3_shutdown(ctx);
+    expect_true(
+        "WebSocket referenced from JS is safe to use after native shutdown",
+        eval_bool(ctx, "keptSocket.send('x'); keptSocket.close(); true"));
+    /* Freeing the runtime runs the WebSocket finalizer on the still-referenced object. */
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(runtime);
+}
+
 static void test_window_size_defaults(void)
 {
     int width = 0;
@@ -682,6 +966,8 @@ int main(void)
     test_invalid_binding_arguments(ctx);
     test_async_await(ctx);
     test_network_bindings(ctx);
+    test_network_string_payloads_leave_no_exception(ctx);
+    test_websocket_echo_and_release(ctx);
     test_box2d_module_registration(ctx);
     test_command_buffer_blend_modes(ctx);
     test_window_size_defaults();
@@ -692,6 +978,7 @@ int main(void)
     JS_FreeRuntime(runtime);
 
     test_local_storage_persistence();
+    test_websocket_outlives_shutdown();
     SDL_Quit();
 
     if (failures == 0) {
