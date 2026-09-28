@@ -504,7 +504,16 @@ SDL_AppResult engine_init(void **appstate, int argc, char *argv[])
         return SDL_APP_FAILURE;
     }
 
-    state->logic_thread = SDL_CreateThread(run_logic_loop, "game-logic", state);
+    /* QuickJS allows a 1 MiB JS stack by default; secondary threads may get
+     * only 512 KiB (macOS), so deep recursion would crash instead of throwing
+     * RangeError. Give the logic thread the usual main-thread stack size. */
+    SDL_PropertiesID thread_props = SDL_CreateProperties();
+    SDL_SetPointerProperty(thread_props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER, (void *)run_logic_loop);
+    SDL_SetStringProperty(thread_props, SDL_PROP_THREAD_CREATE_NAME_STRING, "game-logic");
+    SDL_SetPointerProperty(thread_props, SDL_PROP_THREAD_CREATE_USERDATA_POINTER, state);
+    SDL_SetNumberProperty(thread_props, SDL_PROP_THREAD_CREATE_STACKSIZE_NUMBER, 8 * 1024 * 1024);
+    state->logic_thread = SDL_CreateThreadWithProperties(thread_props);
+    SDL_DestroyProperties(thread_props);
     if (!state->logic_thread) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not start game logic thread: %s", SDL_GetError());
         SDL_DestroyMutex(state->init_mutex);

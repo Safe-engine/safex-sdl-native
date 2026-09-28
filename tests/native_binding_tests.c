@@ -187,6 +187,45 @@ static void test_callbacks_and_invalid_resource_paths(JSContext *ctx)
     JS_FreeValue(ctx, legacy_draw_bindings_removed);
 }
 
+static bool write_resource_fixture(const char *directory, const char *file, const void *data, size_t size)
+{
+    const char *base_path = SDL_GetBasePath();
+    char *directory_path = NULL;
+    char *file_path = NULL;
+    bool ok = base_path &&
+              SDL_asprintf(&directory_path, "%sres/%s", base_path, directory) > 0 &&
+              SDL_asprintf(&file_path, "%s/%s", directory_path, file) > 0 &&
+              SDL_CreateDirectory(directory_path) &&
+              SDL_SaveFile(file_path, data, size);
+    SDL_free(directory_path);
+    SDL_free(file_path);
+    return ok;
+}
+
+/* Tests must not depend on a game's res/ folder, so write the files they load
+ * next to the test binary, where resolve_resource_path() looks first. */
+static void write_resource_fixtures(void)
+{
+    static const char items_json[] = "{\"items\":[]}";
+    expect_true(
+        "writes Json/items.json fixture",
+        write_resource_fixture("Json", "items.json", items_json, sizeof(items_json) - 1));
+
+    /* Silent MPEG-1 Layer III frames: 128 kbps, 44.1 kHz, mono, 417 bytes each. */
+    enum { MP3_FRAME_SIZE = 417, MP3_FRAME_COUNT = 10 };
+    static Uint8 mp3[MP3_FRAME_SIZE * MP3_FRAME_COUNT];
+    for (int i = 0; i < MP3_FRAME_COUNT; i++) {
+        Uint8 *frame = mp3 + i * MP3_FRAME_SIZE;
+        frame[0] = 0xFF;
+        frame[1] = 0xFB;
+        frame[2] = 0x90;
+        frame[3] = 0xC0;
+    }
+    expect_true(
+        "writes Audio/Button.mp3 fixture",
+        write_resource_fixture("Audio", "Button.mp3", mp3, sizeof(mp3)));
+}
+
 static void test_development_resource_path(JSContext *ctx)
 {
     JSValue module = eval_js(
@@ -201,7 +240,7 @@ static void test_development_resource_path(JSContext *ctx)
         "globalThis.resourceFound",
         JS_EVAL_TYPE_GLOBAL);
     expect_true(
-        "native build resolves resources from the repository root",
+        "native build resolves resources next to the executable",
         JS_ToBool(ctx, value));
     JS_FreeValue(ctx, value);
 }
@@ -634,6 +673,7 @@ int main(void)
         return 1;
     }
 
+    write_resource_fixtures();
     js_init_sdl3(ctx);
     test_callbacks_and_invalid_resource_paths(ctx);
     test_development_resource_path(ctx);
